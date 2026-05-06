@@ -32,8 +32,6 @@ v1 supports single-page flows on public sites. Authenticated flows and multi-pag
 <!-- Self-healing log showing original → new selector → confidence → outcome -->
 <!-- ![Healing audit log](docs/assets/healing.png) -->
 
-> **Demo assets in progress.** See the capture plan at the bottom of this file. Files go in `docs/assets/` before pushing.
-
 ---
 
 ## Key features
@@ -51,13 +49,13 @@ v1 supports single-page flows on public sites. Authenticated flows and multi-pag
 
 ```mermaid
 graph LR
-    URL([URL]) -->|async page snapshot| Explorer
-    Explorer -->|List[Flow]| Generator
-    Generator -->|test files + manifest.json| Executor
-    Executor -->|List[TestResult]| Reporter
+    URL([URL]) -->|page snapshot| Explorer
+    Explorer -->|flows| Generator
+    Generator -->|test files + manifest| Executor
+    Executor -->|results| Reporter
     Reporter -->|markdown| Output([reports/latest.md])
     Executor -->|selector failure| Healer
-    Healer -->|healed selector, conf >= 0.7| Executor
+    Healer -->|healed selector| Executor
 ```
 
 The pipeline is a typed assembly line: each stage receives and returns strict Pydantic models, so a malformed Claude response fails loudly at the boundary rather than silently three steps later. Explorer produces `List[Flow]`, Generator consumes flows and produces `List[TestCase]` with associated `.py` files and a `manifest.json`. Executor runs each test in an isolated subprocess and returns `List[TestResult]`. When a result carries a `failing_selector` extracted from the pytest output, the Healer intercepts: it re-opens the live page using the sync Playwright API, re-captures the current DOM and accessibility tree, and sends them to Claude with the original test code and a strict prompt that demands semantic matching. If confidence clears 0.7, the test file is rewritten in place and re-run once. The manifest decouples generation from execution — the executor is stateless and reads only from `manifest.json`, which means tests can be re-run or manually edited without touching the generator.
@@ -234,40 +232,9 @@ Decoupling generation from execution via a manifest file was the decision that m
 
 ---
 
-## Development workflow
-
-This project was built with [Claude Code](https://claude.ai/code) as a development partner. The architecture, all eight modules, the test suite, and the self-healing layer were written in collaborative sessions where Claude Code generated implementations and I specified requirements, reviewed code, and directed architectural decisions. Prompt design was iterative — the versions in `prompts.py` are the ones that produced reliable, structured outputs after several rounds of tightening.
-
-Building a QA automation tool with an AI coding assistant is intentionally recursive. The same questions that shape the agent's design — how do you scope a task, how do you validate an output, when do you refuse to act — apply directly to the development process itself.
-
----
-
 ## License
 
 MIT — see [LICENSE](LICENSE) for details.
 
 [to7vx](https://github.com/to7vx) · hanee877@gmail.com
 
----
-
-## Demo capture plan
-
-**Goal:** Three assets, each showing a distinct capability. Combined under 90 seconds of viewing time.
-
-**Asset 1 — `docs/assets/demo.gif`**
-Full pipeline terminal recording on `https://saucedemo.com`.
-1. Run `uv run qa-agent run https://saucedemo.com --headed`
-2. Show the browser opening briefly (1–2 seconds)
-3. Let the progress table animate through all tests
-4. End on the "Report written to reports/latest.md" line
-Target: 30–40 seconds. Tool: [Terminalizer](https://terminalizer.com/) or [asciinema](https://asciinema.org/) exported to GIF. Output: 720p, 15fps, under 5 MB.
-
-**Asset 2 — `docs/assets/report.png`**
-Screenshot of `reports/latest.md` rendered on GitHub — the full report including the Quality Assessment section and the results table.
-Target: full-page screenshot, cropped to the meaningful content.
-
-**Asset 3 — `docs/assets/healing.png`**
-Screenshot of the healing log or terminal output showing a real heal. Either:
-- The `reports/healing_stats.json` file rendered in a JSON viewer, or
-- The terminal output showing `Healed <test>: <original> -> <new> (confidence 87%)`
-This is the asset that makes the audit-trail claim concrete — it should be real output, not mocked.
