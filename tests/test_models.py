@@ -6,6 +6,7 @@ import pytest
 
 from qa_agent.models import (
     Flow,
+    FlowPriority,
     FlowStep,
     Report,
     TestCase,
@@ -20,18 +21,44 @@ def test_flow_step_optional_fields() -> None:
     assert step.action is None
 
 
+def test_flow_priority_default() -> None:
+    flow = Flow(id="f1", name="Login", description="User logs in", url="https://example.com")
+    assert flow.priority == FlowPriority.MEDIUM
+    assert flow.priority.value == "medium"
+
+
+def test_flow_priority_from_string() -> None:
+    flow = Flow(
+        id="f2",
+        name="Checkout",
+        description="User checks out",
+        url="https://example.com",
+        priority="high",
+    )
+    assert flow.priority == FlowPriority.HIGH
+    assert flow.priority == "high"  # str Enum equality
+
+
+def test_flow_priority_values() -> None:
+    assert FlowPriority.HIGH == "high"
+    assert FlowPriority.MEDIUM == "medium"
+    assert FlowPriority.LOW == "low"
+
+
 def test_flow_roundtrip() -> None:
     flow = Flow(
         id="flow_abc123",
         name="Login",
         description="User logs in",
         url="https://example.com",
+        priority="high",
         steps=[FlowStep(description="Fill email", action="fill")],
         tags=["auth"],
     )
     dumped = flow.model_dump()
     restored = Flow(**dumped)
     assert restored.id == flow.id
+    assert restored.priority == FlowPriority.HIGH
     assert len(restored.steps) == 1
 
 

@@ -1,4 +1,4 @@
-"""Main orchestrator: ties Explorer → Generator → Executor → Reporter together."""
+"""Main orchestrator: Explorer -> Generator -> Executor -> Reporter."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from .config import Settings
 from .executor import Executor
 from .explorer import Explorer
 from .generator import Generator
+from .healer import Healer
 from .models import Report
 from .reporter import Reporter
 
@@ -24,10 +25,15 @@ class QAAgent:
         self.client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
         self.explorer = Explorer(settings, self.client)
         self.generator = Generator(settings, self.client)
-        self.executor = Executor()
-        self.reporter = Reporter(settings.report_dir)
+        self.executor = Executor(settings)
+        self.reporter = Reporter(settings.report_dir, client=self.client, model=settings.model)
 
-    async def run(self, url: str) -> Report:
+    async def run(
+        self,
+        url: str,
+        open_report: bool = False,
+        heal: bool = True,
+    ) -> Report:
         settings = self.settings
         settings.ensure_dirs()
 
@@ -37,28 +43,48 @@ class QAAgent:
             started_at=datetime.now(timezone.utc),
         )
 
-        console.print(f"\n[bold cyan]QA Agent[/bold cyan] starting on [link={url}]{url}[/link]\n")
+        console.print(f"\n[bold cyan]QA Agent[/bold cyan] starting on {url}\n")
 
-        console.print("[dim]Step 1/4[/dim]  Exploring page and identifying flows…")
+        # Step 1: Explore
+        console.print("[dim]Step 1/4[/dim]  Exploring page and identifying flows...")
         flows = await self.explorer.explore(url)
         report.flows = flows
+        page_context = (
+            self.explorer.last_snapshot.to_prompt_context()
+            if self.explorer.last_snapshot
+            else ""
+        )
         console.print(f"         Found [bold]{len(flows)}[/bold] flows\n")
 
-        console.print("[dim]Step 2/4[/dim]  Generating test cases…")
-        test_cases = self.generator.generate(flows)
+        # Step 2: Generate
+        console.print("[dim]Step 2/4[/dim]  Generating test cases...\n")
+        test_cases = self.generator.generate(flows, page_context=page_context)
         report.test_cases = test_cases
-        console.print(f"         Generated [bold]{len(test_cases)}[/bold] test cases\n")
+        console.print(f"\n         Generated [bold]{len(test_cases)}[/bold] test cases\n")
 
-        console.print("[dim]Step 3/4[/dim]  Writing test files…")
-        self.generator.write(test_cases)
-        console.print(f"         Wrote to [dim]{settings.output_dir}/[/dim]\n")
+        # Step 3: Write
+        console.print("[dim]Step 3/4[/dim]  Writing test files...")
+        manifest_path = self.generator.write(test_cases, url=url)
+        console.print(
+            f"         Written to [dim]{settings.output_dir}/[/dim]  "
+            f"manifest: [dim]{manifest_path.name}[/dim]\n"
+        )
 
-        console.print("[dim]Step 4/4[/dim]  Executing tests…")
-        results = self.executor.run(test_cases)
+        # Step 4: Execute (with optional self-healing)
+        heal_label = "" if not heal else "  [dim](self-healing enabled)[/dim]"
+        console.print(f"[dim]Step 4/4[/dim]  Executing tests...{heal_label}\n")
+
+        healer = (
+            Healer(settings, self.client, settings.model) if heal else None
+        )
+        results, healing_attempts = self.executor.run(test_cases, healer=healer, url=url)
         report.results = results
-        console.print()
+        report.healing_attempts = healing_attempts
+        self.executor.save_raw_results(results, healing_attempts)
 
-        report = self.reporter.finalize(report)
+        # Finalize report
+        report = self.reporter.finalize(report, open_after=open_report)
+        console.print()
         self.reporter.print_summary(report)
 
         return report

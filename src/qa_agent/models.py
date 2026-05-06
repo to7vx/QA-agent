@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+
+class FlowPriority(str, Enum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
 
 
 class FlowStep(BaseModel):
@@ -21,6 +27,7 @@ class Flow(BaseModel):
     name: str
     description: str
     url: str
+    priority: FlowPriority = FlowPriority.MEDIUM
     steps: list[FlowStep] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
 
@@ -44,6 +51,18 @@ class TestCase(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class HealingAttempt(BaseModel):
+    test_case_id: str
+    test_case_name: str
+    original_selector: str
+    new_selector: str | None = None
+    confidence: float = 0.0
+    reasoning: str = ""
+    # healed | failed | refused | error
+    outcome: str = "pending"
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class TestResult(BaseModel):
     test_case_id: str
     test_case_name: str
@@ -54,6 +73,8 @@ class TestResult(BaseModel):
     stdout: str = ""
     stderr: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
+    healed: bool = False
+    healing: HealingAttempt | None = None
 
 
 class Report(BaseModel):
@@ -64,6 +85,7 @@ class Report(BaseModel):
     flows: list[Flow] = Field(default_factory=list)
     test_cases: list[TestCase] = Field(default_factory=list)
     results: list[TestResult] = Field(default_factory=list)
+    healing_attempts: list[HealingAttempt] = Field(default_factory=list)
     markdown_path: str = ""
 
     @property
