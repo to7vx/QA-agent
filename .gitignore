@@ -1,0 +1,140 @@
+# =============================================================================
+# Python
+# =============================================================================
+
+# Secrets — never commit
+.env
+.env.local
+.env.*.local
+
+# Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.so
+.Python
+
+# Build / distribution
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# uv
+.uv/
+
+# pytest and coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# =============================================================================
+# AI tooling — LOCAL ONLY (personal config, secrets, scratch — never commit)
+# =============================================================================
+
+# Personal working notes (raw material for Lessons Learned — not for the repo)
+NOTES.md
+
+# Claude Code — local/personal settings only
+# NOTE: CLAUDE.md at project root is intentionally committed (see section below)
+.claude/settings.local.json
+.claude/cache/
+.claude/logs/
+.claude/history/
+.claude/tmp/
+.claude.local.*
+
+# Anthropic SDK local config
+.anthropic/
+
+# Aider
+.aider*
+.aider.chat.history.md
+.aider.input.history
+
+# Continue.dev
+.continue/
+
+# Codeium
+.codeium/
+
+# Windsurf
+.windsurf/
+
+# Cursor — local config only
+# NOTE: .cursor/rules/ is intentionally committed (workflow signal)
+.cursor/chat/
+.cursor/logs/
+
+# Generic AI tool caches and temp files
+.ai/cache/
+.ai/tmp/
+*.ai.tmp
+*.claude.tmp
+copilot-debug.log
+*-copilot-debug.log
+
+# =============================================================================
+# AI tooling — COMMITTED (intentional signals of workflow — do NOT add here)
+# =============================================================================
+#
+# These are KEPT in the repo:
+#   CLAUDE.md                     project context for AI agents
+#   AGENTS.md                     multi-agent project context (if added)
+#   .cursor/rules/                Cursor rule files (if added)
+#   .claude/skills/               project-specific Claude Code skills (if added)
+#
+# =============================================================================
+
+# =============================================================================
+# Project outputs
+# =============================================================================
+
+# Playwright runtime artifacts
+playwright/.auth/
+test-results/
+playwright-report/
+screenshots/
+
+# Generated test files
+# DECISION PENDING: for portfolio, we may want to commit a curated sample run.
+# For now, ignore all generated tests. When ready to showcase, explicitly
+# `git add generated_tests/sample_run.py` and remove from this pattern.
+generated_tests/*.py
+
+# Reports — ignore bulk output, allow one curated example
+reports/*.md
+reports/raw_results.json
+reports/healing_stats.json
+# To commit a sample report: git add -f reports/sample_report.md
+!reports/sample_report.md
+
+# =============================================================================
+# Editor / OS
+# =============================================================================
+
+# VS Code — ignoring the whole folder for now
+# If team-shared settings are added (extensions.json, launch.json),
+# move those specific files to a negation pattern and commit them.
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
