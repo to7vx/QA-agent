@@ -236,5 +236,5 @@ Decoupling generation from execution via a manifest file was the decision that m
 
 MIT — see [LICENSE](LICENSE) for details.
 
-[to7vx](https://github.com/to7vx) · hanee877@gmail.com
+[to7vx](https://github.com/to7vx) · Ahmed.xdev1@gmail.com
 
