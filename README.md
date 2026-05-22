@@ -155,6 +155,42 @@ uv run qa-agent execute --no-heal
 
 ---
 
+## Web dashboard & API
+
+Beyond the CLI, qa-agent ships a FastAPI service and a Next.js dashboard
+(persisted run history, live SSE progress, analytics, BYOK keys, multi-tenant
+auth, and per-run LLM cost tracking).
+
+Run the whole stack locally with one command:
+
+```bash
+docker compose up --build
+# Dashboard → http://localhost:3000
+# API + interactive docs → http://localhost:8000/docs
+```
+
+This starts Postgres + API + dashboard in no-auth mode (no Supabase required).
+Provide `GEMINI_API_KEY` or `ANTHROPIC_API_KEY` for real runs.
+
+## Deploy
+
+See **[DEPLOYMENT.md](DEPLOYMENT.md)** for production deployment — the API to a
+container host (Fly.io / Railway / Render) with Postgres, and the dashboard to
+Vercel — plus the required environment variables and how to generate the
+encryption key.
+
+## Develop
+
+```bash
+uv sync --extra api --group dev && uv run pre-commit install
+uv run ruff check . && uv run mypy src && uv run pytest
+```
+
+See **[CONTRIBUTING.md](CONTRIBUTING.md)** for conventions and the full command
+reference, and **[SECURITY.md](SECURITY.md)** for the threat model.
+
+---
+
 ## How it works
 
 **Flow identification.** The Explorer launches headless Chromium and captures a structured page snapshot: the full HTML, a JavaScript-extracted inventory of interactive elements (buttons, inputs, links, forms — each with the most stable selector available, preferring `id` over `name` over `aria-label` over `class`), and Playwright's accessibility tree. That snapshot is formatted into a prompt and sent to Claude, which returns a JSON array of 3–7 flows ranked by priority. The schema is strict enough that the Generator can consume the output directly — no interpretation step.
