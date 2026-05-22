@@ -1,13 +1,16 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, Cpu, Gauge, KeyRound, Loader2, User } from "lucide-react";
+import { CheckCircle2, Cpu, Gauge, KeyRound, Loader2, Trash2, User } from "lucide-react";
 import { useState } from "react";
 
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+
+type Provider = "anthropic" | "gemini";
 
 const MODELS = [
   "anthropic/claude-sonnet-4-6",
@@ -35,6 +38,8 @@ export default function SettingsPage() {
   const [gemini, setGemini] = useState("");
   const [model, setModel] = useState<string | null>(null);
 
+  const [confirmClear, setConfirmClear] = useState<Provider | null>(null);
+
   const save = useMutation({
     mutationFn: (body: { anthropic_key?: string; gemini_key?: string; default_model?: string }) =>
       api.updateSettings(body),
@@ -42,6 +47,17 @@ export default function SettingsPage() {
       setAnthropic("");
       setGemini("");
       setModel(null);
+      qc.invalidateQueries({ queryKey: ["settings"] });
+    },
+  });
+
+  const clearKey = useMutation({
+    mutationFn: (which: Provider) =>
+      api.updateSettings(
+        which === "anthropic" ? { clear_anthropic: true } : { clear_gemini: true }
+      ),
+    onSuccess: () => {
+      setConfirmClear(null);
       qc.invalidateQueries({ queryKey: ["settings"] });
     },
   });
@@ -80,6 +96,7 @@ export default function SettingsPage() {
             placeholder={d?.has_anthropic_key ? "•••••••• (leave blank to keep)" : "sk-ant-…"}
             value={anthropic}
             onChange={setAnthropic}
+            onRemove={d?.has_anthropic_key ? () => setConfirmClear("anthropic") : undefined}
           />
           <KeyField
             label="Gemini API key"
@@ -87,6 +104,7 @@ export default function SettingsPage() {
             placeholder={d?.has_gemini_key ? "•••••••• (leave blank to keep)" : "AIza…"}
             value={gemini}
             onChange={setGemini}
+            onRemove={d?.has_gemini_key ? () => setConfirmClear("gemini") : undefined}
           />
           <SaveButton pending={save.isPending} ok={save.isSuccess} error={save.error as Error | null} />
         </form>
@@ -176,6 +194,17 @@ export default function SettingsPage() {
           </p>
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmClear !== null}
+        destructive
+        title={`Remove ${confirmClear === "anthropic" ? "Anthropic" : "Gemini"} API key?`}
+        description="The stored key will be permanently deleted. Runs that rely on this provider will fail until a new key is saved."
+        confirmLabel="Remove key"
+        pending={clearKey.isPending}
+        onConfirm={() => confirmClear && clearKey.mutate(confirmClear)}
+        onCancel={() => !clearKey.isPending && setConfirmClear(null)}
+      />
     </div>
   );
 }
@@ -212,23 +241,36 @@ function KeyField({
   placeholder,
   value,
   onChange,
+  onRemove,
 }: {
   label: string;
   set?: boolean;
   placeholder: string;
   value: string;
   onChange: (v: string) => void;
+  onRemove?: () => void;
 }) {
   return (
     <div>
-      <label className="label flex items-center gap-2">
-        {label}
-        {set && (
-          <span className="badge border-good/25 bg-good/10 text-good">
-            <span className="h-1.5 w-1.5 rounded-full bg-good" /> set
-          </span>
+      <div className="mb-1.5 flex items-center justify-between">
+        <label className="label mb-0 flex items-center gap-2">
+          {label}
+          {set && (
+            <span className="badge border-good/25 bg-good/10 text-good">
+              <span className="h-1.5 w-1.5 rounded-full bg-good" /> set
+            </span>
+          )}
+        </label>
+        {onRemove && (
+          <button
+            type="button"
+            onClick={onRemove}
+            className="inline-flex items-center gap-1 text-[11px] font-medium text-faint transition-colors hover:text-bad"
+          >
+            <Trash2 className="h-3 w-3" /> Remove
+          </button>
         )}
-      </label>
+      </div>
       <input
         className="input font-mono"
         type="password"

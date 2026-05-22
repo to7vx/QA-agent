@@ -16,10 +16,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className={`${GeistSans.variable} ${GeistMono.variable}`}>
       <body className="font-sans">
         <Providers>
-          <div className="flex min-h-dvh">
+          <div className="flex min-h-dvh flex-col lg:flex-row">
             <Nav />
             <main className="flex-1 overflow-x-hidden">
-              <div className="mx-auto max-w-6xl px-8 py-10">{children}</div>
+              <div className="mx-auto max-w-6xl px-5 py-8 lg:px-8 lg:py-10">{children}</div>
             </main>
           </div>
         </Providers>

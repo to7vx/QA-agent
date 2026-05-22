@@ -71,8 +71,14 @@ export const api = {
   trend: () => request<TrendPoint[]>("/analytics/pass-rate-trend"),
   healing: () => request<Record<string, number>>("/analytics/healing"),
   getSettings: () => request<UserSettings>("/settings"),
-  updateSettings: (body: Partial<UserSettings> & { anthropic_key?: string; gemini_key?: string }) =>
-    request<UserSettings>("/settings", { method: "PUT", body: JSON.stringify(body) }),
+  updateSettings: (
+    body: Partial<UserSettings> & {
+      anthropic_key?: string;
+      gemini_key?: string;
+      clear_anthropic?: boolean;
+      clear_gemini?: boolean;
+    }
+  ) => request<UserSettings>("/settings", { method: "PUT", body: JSON.stringify(body) }),
   authProfiles: {
     list: () => request<AuthProfileSummary[]>("/auth-profiles"),
     create: (body: { name: string; origin: string; storage_state: Record<string, unknown> }) =>

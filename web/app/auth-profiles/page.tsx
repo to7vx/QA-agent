@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ShieldCheck, Terminal, Trash2, Upload } from "lucide-react";
 import { useState } from "react";
 
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { PageHeader } from "@/components/PageHeader";
 import { api } from "@/lib/api";
 import { fmtDate } from "@/lib/utils";
@@ -37,9 +38,14 @@ export default function AuthProfilesPage() {
     onError: (e) => setParseError((e as Error).message),
   });
 
+  const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null);
+
   const remove = useMutation({
     mutationFn: (id: string) => api.authProfiles.delete(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["auth-profiles"] }),
+    onSuccess: () => {
+      setPendingDelete(null);
+      qc.invalidateQueries({ queryKey: ["auth-profiles"] });
+    },
   });
 
   return (
@@ -79,8 +85,7 @@ export default function AuthProfilesPage() {
                   </div>
                 </div>
                 <button
-                  onClick={() => remove.mutate(p.id)}
-                  disabled={remove.isPending}
+                  onClick={() => setPendingDelete({ id: p.id, name: p.name })}
                   className="rounded-lg border border-line p-2 text-faint transition-colors hover:border-bad/40 hover:text-bad"
                   aria-label={`Delete ${p.name}`}
                 >
@@ -141,6 +146,23 @@ export default function AuthProfilesPage() {
           </form>
         </section>
       </div>
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        destructive
+        title="Delete this auth profile?"
+        description={
+          <>
+            <span className="font-mono text-ink">{pendingDelete?.name}</span> will be permanently
+            removed. Runs that inject this session will no longer be able to test pages behind its
+            login.
+          </>
+        }
+        confirmLabel="Delete profile"
+        pending={remove.isPending}
+        onConfirm={() => pendingDelete && remove.mutate(pendingDelete.id)}
+        onCancel={() => !remove.isPending && setPendingDelete(null)}
+      />
     </div>
   );
 }
