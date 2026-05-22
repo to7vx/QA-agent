@@ -1,0 +1,61 @@
+# Local full-stack run: Postgres + API + dashboard.
+#
+#   docker compose up --build
+#   open http://localhost:3000
+#
+# Runs in no-auth mode by default (QA_AGENT_AUTH_DISABLED=1) so you can try the
+# whole product without a Supabase project. Provide a provider key below
+# (ANTHROPIC_API_KEY or GEMINI_API_KEY) for real runs.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: qa
+      POSTGRES_PASSWORD: qa
+      POSTGRES_DB: qa_agent
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qa -d qa_agent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      QA_AGENT_DATABASE_URL: postgresql+psycopg://qa:qa@db:5432/qa_agent
+      QA_AGENT_AUTH_DISABLED: "1"
+      QA_AGENT_CORS_ORIGINS: http://localhost:3000
+      # Stable Fernet key so encrypted secrets survive restarts. DEV ONLY —
+      # generate your own for any real deployment (see DEPLOYMENT.md).
+      QA_AGENT_SECRET_KEY: ${QA_AGENT_SECRET_KEY:-9QxMxNzB23_q21TsJ-9PJemVlpb7Hkg69Zaza6K6km8=}
+      QA_AGENT_MODEL: ${QA_AGENT_MODEL:-gemini/gemini-2.5-flash}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      QA_AGENT_LOG_LEVEL: ${QA_AGENT_LOG_LEVEL:-INFO}
+    ports:
+      - "8000:8000"
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    depends_on:
+      - api
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:

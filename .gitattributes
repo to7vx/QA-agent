@@ -1,0 +1,5 @@
+# Shell scripts and Dockerfiles MUST stay LF so they work inside Linux
+# containers (CRLF breaks the shebang → "bad interpreter").
+*.sh text eol=lf
+Dockerfile text eol=lf
+entrypoint.sh text eol=lf

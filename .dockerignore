@@ -1,0 +1,31 @@
+# Build context hygiene for the API image.
+.git
+.github
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+coverage.xml
+htmlcov
+
+# Web app — built as a separate image from ./web.
+web
+
+# Runtime artifacts / local state — never bake into the image.
+*.db
+reports
+generated_tests
+demo
+screenshots
+
+# Local config & docs not needed at runtime.
+.env
+.env.*
+*.md
+!README.md
+.claude
+.remember
+alembic/README

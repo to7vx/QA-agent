@@ -1,0 +1,47 @@
+name: Docker
+
+# Validates that the API and web images still build. No registry push.
+on:
+  push:
+    branches: [master, production-hardening]
+    paths:
+      - "Dockerfile"
+      - "web/Dockerfile"
+      - ".dockerignore"
+      - "docker-compose.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "web/package*.json"
+      - ".github/workflows/docker.yml"
+  pull_request:
+    branches: [master]
+
+jobs:
+  build:
+    name: Build images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build web image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./web
+          file: ./web/Dockerfile
+          push: false
+          load: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
