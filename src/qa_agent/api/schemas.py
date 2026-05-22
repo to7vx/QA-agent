@@ -35,6 +35,9 @@ class RunSummary(BaseModel):
     passed: int
     failed: int
     pass_rate: float
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cost_usd: float = 0.0
     error: str | None = None
 
 
@@ -60,6 +63,9 @@ class AnalyticsSummary(BaseModel):
     tests_failed: int
     overall_pass_rate: float
     successful_heals: int
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cost_usd: float = 0.0
 
 
 class TrendPoint(BaseModel):

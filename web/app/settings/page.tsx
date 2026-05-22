@@ -133,9 +133,27 @@ export default function SettingsPage() {
             />
             <StatCard label="Heals" value={summary.data?.successful_heals ?? "—"} />
           </div>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <StatCard
+              label="LLM cost (est.)"
+              value={summary.data ? `$${summary.data.cost_usd.toFixed(4)}` : "—"}
+              accent
+            />
+            <StatCard label="Tokens in" value={summary.data?.tokens_in.toLocaleString() ?? "—"} />
+            <StatCard label="Tokens out" value={summary.data?.tokens_out.toLocaleString() ?? "—"} />
+            <StatCard
+              label="Avg cost / run"
+              value={
+                summary.data && summary.data.total_runs
+                  ? `$${(summary.data.cost_usd / summary.data.total_runs).toFixed(4)}`
+                  : "—"
+              }
+            />
+          </div>
           <div className="card text-[13px] text-muted">
-            Per-user quotas are enforced server-side: concurrent runs and a daily cap. Adjust them via
-            the API env vars <span className="font-mono text-faint">QA_AGENT_MAX_CONCURRENT_RUNS</span> and{" "}
+            Cost is an estimate from per-model token pricing (display only, not billing). Per-user
+            quotas are enforced server-side: concurrent runs and a daily cap. Adjust them via the API
+            env vars <span className="font-mono text-faint">QA_AGENT_MAX_CONCURRENT_RUNS</span> and{" "}
             <span className="font-mono text-faint">QA_AGENT_DAILY_RUN_CAP</span>.
           </div>
         </section>

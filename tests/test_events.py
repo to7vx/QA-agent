@@ -8,8 +8,10 @@ makes emission a no-op (the CLI path).
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 from qa_agent.events import EventEmitter, ProgressEvent
+from qa_agent.models import Usage
 
 from .synthetic import build_report
 
@@ -99,6 +101,8 @@ def _build_fake_agent(on_event):
     agent.settings = Settings(anthropic_api_key="x", model="anthropic/claude-sonnet-4-6")
     agent.run_id = "run_fake01"
     agent.emitter = EventEmitter(run_id="run_fake01", sink=on_event)
+    # Stand-in for the LLMClient: the agent reads client.usage after finalize.
+    agent.client = SimpleNamespace(usage=Usage())
     agent.explorer = FakeExplorer()
     agent.generator = FakeGenerator()
     agent.executor = FakeExecutor()

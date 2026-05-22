@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from qa_agent.models import TestStatus
+from qa_agent.models import TestStatus, Usage
 from qa_agent.store import RunRepository, make_database
 
 from .synthetic import build_report
@@ -43,6 +43,26 @@ def _seed_run(repo: RunRepository, owner: str, run_id: str) -> None:
     repo.finalize_run(
         owner_id=owner, report=report, markdown_body="# Report", ai_analysis="Healthy."
     )
+
+
+def test_usage_persists_and_aggregates(repo: RunRepository) -> None:
+    report = build_report("run_cost1")
+    report.usage = Usage(tokens_in=1200, tokens_out=800, cost_usd=0.0156, calls=4)
+    repo.create_run(run_id="run_cost1", owner_id=USER_A, url=report.url, model="m")
+    repo.mark_running(run_id="run_cost1", owner_id=USER_A)
+    repo.finalize_run(owner_id=USER_A, report=report, markdown_body="# r")
+
+    # Round-trips on the run summary and the full report.
+    summary_row = repo.get_run_row(run_id="run_cost1", owner_id=USER_A)
+    assert summary_row["tokens_in"] == 1200
+    assert summary_row["cost_usd"] == pytest.approx(0.0156)
+    rt = repo.get_report(run_id="run_cost1", owner_id=USER_A)
+    assert rt.usage.tokens_out == 800
+
+    # And rolls up into the analytics summary.
+    agg = repo.summary(owner_id=USER_A)
+    assert agg["tokens_in"] == 1200
+    assert agg["cost_usd"] == pytest.approx(0.0156)
 
 
 def test_finalize_and_roundtrip(repo: RunRepository) -> None:

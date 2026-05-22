@@ -26,24 +26,47 @@ def origin_of(url: str) -> str:
     return f"{p.scheme}://{p.netloc}"
 
 
-async def capture_storage_state(login_url: str, *, headless: bool = False) -> dict[str, Any]:
+DEFAULT_CAPTURE_TIMEOUT_S = 300.0
+
+
+class AuthCaptureTimeout(Exception):
+    """Raised when the user doesn't finish logging in within the time limit."""
+
+
+async def capture_storage_state(
+    login_url: str,
+    *,
+    headless: bool = False,
+    timeout_s: float = DEFAULT_CAPTURE_TIMEOUT_S,
+) -> dict[str, Any]:
     """Open a browser at ``login_url``, wait for the human to log in, then
-    return the captured storage state when the page/browser is closed.
+    return the captured storage state when the page/window is closed.
 
     Headed by default — the user needs to interact. Intended for CLI use.
+    Raises :class:`AuthCaptureTimeout` if the window isn't closed within
+    ``timeout_s`` (default 5 min) so the call can't hang forever.
     """
+    from playwright.async_api import TimeoutError as PlaywrightTimeout
     from playwright.async_api import async_playwright
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)
-        context = await browser.new_context()
-        page = await context.new_page()
-        await page.goto(login_url, wait_until="domcontentloaded")
-        # Block until the user closes the page/window.
-        with suppress(Exception):
-            await page.wait_for_event("close", timeout=0)
-        state = await context.storage_state()
-        await browser.close()
+        try:
+            context = await browser.new_context()
+            page = await context.new_page()
+            await page.goto(login_url, wait_until="domcontentloaded")
+            # Block until the user closes the page/window, bounded by timeout.
+            try:
+                await page.wait_for_event("close", timeout=timeout_s * 1000)
+            except PlaywrightTimeout as exc:
+                raise AuthCaptureTimeout(
+                    f"Login not completed within {timeout_s:.0f}s — close the "
+                    "browser window after logging in to capture the session."
+                ) from exc
+            state = await context.storage_state()
+        finally:
+            with suppress(Exception):
+                await browser.close()
         # storage_state() returns a TypedDict; normalize to a plain dict.
         return dict(state)
 

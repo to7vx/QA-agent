@@ -162,6 +162,9 @@ class QAAgent:
             # Finalize report
             emit.emit("report", "start", "Analyzing results")
             report = self.reporter.finalize(report, open_after=open_report)
+            # Snapshot cumulative LLM usage (explore+generate+heal+report calls
+            # all funnel through one client). Done last so reporter calls count.
+            report.usage = self.client.usage
             console.print()
             self.reporter.print_summary(report)
             emit.emit("report", "end", "Report ready", markdown_path=report.markdown_path)
@@ -174,6 +177,9 @@ class QAAgent:
                 failed=report.failed,
                 total=report.total,
                 pass_rate=report.pass_rate,
+                cost_usd=round(report.usage.cost_usd, 4),
+                tokens_in=report.usage.tokens_in,
+                tokens_out=report.usage.tokens_out,
             )
         except Exception as exc:  # noqa: BLE001 - surface failure as an event then re-raise
             emit.emit("error", "error", str(exc), error_type=type(exc).__name__)

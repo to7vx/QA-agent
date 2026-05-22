@@ -29,6 +29,15 @@ class ApiSettings(BaseSettings):
     daily_run_cap_per_user: int = Field(50, alias="QA_AGENT_DAILY_RUN_CAP")
     parallelism: int = Field(4, alias="QA_AGENT_PARALLELISM")
 
+    # Observability.
+    log_level: str = Field("INFO", alias="QA_AGENT_LOG_LEVEL")
+    log_json: bool = Field(True, alias="QA_AGENT_LOG_JSON")
+    sentry_dsn: str | None = Field(None, alias="SENTRY_DSN")
+
+    # Rate limiting (slowapi syntax, e.g. "120/minute"). Empty string disables.
+    rate_limit: str = Field("120/minute", alias="QA_AGENT_RATE_LIMIT")
+    rate_limit_runs: str = Field("20/minute", alias="QA_AGENT_RATE_LIMIT_RUNS")
+
     # Test/dev escape hatch: disable auth and treat every request as one user.
     auth_disabled: bool = Field(False, alias="QA_AGENT_AUTH_DISABLED")
     dev_user_id: str = Field("dev-user", alias="QA_AGENT_DEV_USER_ID")

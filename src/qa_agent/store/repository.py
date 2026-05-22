@@ -193,6 +193,9 @@ class RunRepository:
             run.passed = report.passed
             run.failed = report.failed
             run.pass_rate = report.pass_rate
+            run.tokens_in = report.usage.tokens_in
+            run.tokens_out = report.usage.tokens_out
+            run.cost_usd = report.usage.cost_usd
             run.markdown_path = report.markdown_path
             run.markdown_body = markdown_body
             run.ai_analysis = ai_analysis
@@ -266,9 +269,13 @@ class RunRepository:
                     func.coalesce(func.sum(RunORM.total), 0),
                     func.coalesce(func.sum(RunORM.passed), 0),
                     func.coalesce(func.sum(RunORM.failed), 0),
+                    func.coalesce(func.sum(RunORM.tokens_in), 0),
+                    func.coalesce(func.sum(RunORM.tokens_out), 0),
+                    func.coalesce(func.sum(RunORM.cost_usd), 0.0),
                 ).where(RunORM.owner_id == owner_id, RunORM.status == "succeeded")
             ).one()
             tests_total, tests_passed, tests_failed = int(agg[0]), int(agg[1]), int(agg[2])
+            tokens_in, tokens_out, cost_usd = int(agg[3]), int(agg[4]), float(agg[5])
             heals = (
                 s.scalar(
                     select(func.count())
@@ -287,6 +294,9 @@ class RunRepository:
                 "tests_failed": tests_failed,
                 "overall_pass_rate": (tests_passed / tests_total * 100) if tests_total else 0.0,
                 "successful_heals": int(heals),
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+                "cost_usd": cost_usd,
             }
 
     def pass_rate_trend(self, *, owner_id: str, limit: int = 30) -> list[dict[str, Any]]:
@@ -353,5 +363,8 @@ class RunRepository:
             "passed": run.passed,
             "failed": run.failed,
             "pass_rate": run.pass_rate,
+            "tokens_in": run.tokens_in,
+            "tokens_out": run.tokens_out,
+            "cost_usd": run.cost_usd,
             "error": run.error,
         }

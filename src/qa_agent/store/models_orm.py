@@ -54,6 +54,11 @@ class RunORM(Base):
     failed: Mapped[int] = mapped_column(Integer, default=0)
     pass_rate: Mapped[float] = mapped_column(Float, default=0.0)
 
+    # LLM usage / estimated cost for the run (display-only, not billing).
+    tokens_in: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_out: Mapped[int] = mapped_column(Integer, default=0)
+    cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+
     markdown_path: Mapped[str] = mapped_column(Text, default="")
     markdown_body: Mapped[str] = mapped_column(Text, default="")
     ai_analysis: Mapped[str] = mapped_column(Text, default="")

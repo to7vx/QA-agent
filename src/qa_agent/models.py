@@ -15,6 +15,21 @@ class FlowPriority(str, Enum):
     LOW = "low"
 
 
+class Usage(BaseModel):
+    """Cumulative LLM token usage and estimated cost for a run."""
+
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cost_usd: float = 0.0
+    calls: int = 0
+
+    def add(self, *, tokens_in: int, tokens_out: int, cost_usd: float) -> None:
+        self.tokens_in += tokens_in
+        self.tokens_out += tokens_out
+        self.cost_usd += cost_usd
+        self.calls += 1
+
+
 class FlowStep(BaseModel):
     description: str
     selector: str | None = None
@@ -98,6 +113,7 @@ class Report(BaseModel):
     test_cases: list[TestCase] = Field(default_factory=list)
     results: list[TestResult] = Field(default_factory=list)
     healing_attempts: list[HealingAttempt] = Field(default_factory=list)
+    usage: Usage = Field(default_factory=Usage)
     markdown_path: str = ""
 
     @property

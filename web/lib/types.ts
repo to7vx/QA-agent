@@ -16,6 +16,9 @@ export interface RunSummary {
   passed: number;
   failed: number;
   pass_rate: number;
+  tokens_in: number;
+  tokens_out: number;
+  cost_usd: number;
   error: string | null;
 }
 
@@ -41,6 +44,9 @@ export interface AnalyticsSummary {
   tests_failed: number;
   overall_pass_rate: number;
   successful_heals: number;
+  tokens_in: number;
+  tokens_out: number;
+  cost_usd: number;
 }
 
 export interface TrendPoint {

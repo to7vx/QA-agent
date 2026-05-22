@@ -17,6 +17,7 @@ from ..models import (
     TestCase,
     TestResult,
     TestStatus,
+    Usage,
 )
 from .models_orm import (
     FlowORM,
@@ -174,5 +175,10 @@ def orm_to_report(run: RunORM) -> Report:
         test_cases=[orm_to_test_case(t) for t in run.test_cases],
         results=results,
         healing_attempts=healing_attempts,
+        usage=Usage(
+            tokens_in=run.tokens_in,
+            tokens_out=run.tokens_out,
+            cost_usd=run.cost_usd,
+        ),
         markdown_path=run.markdown_path,
     )

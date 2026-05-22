@@ -57,6 +57,9 @@ export default function RunDetailPage() {
           </h1>
           <p className="mt-1.5 font-mono text-[11px] text-faint">
             {runId} · {run.data ? fmtDate(run.data.created_at) : ""} · {run.data?.model}
+            {run.data && run.data.cost_usd > 0 && (
+              <> · ${run.data.cost_usd.toFixed(4)} est.</>
+            )}
           </p>
         </div>
         {run.data && <StatusBadge status={run.data.status} />}
