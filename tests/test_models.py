@@ -1,8 +1,6 @@
 """Basic tests for Pydantic models."""
 
-from datetime import datetime, timezone
-
-import pytest
+from datetime import UTC, datetime
 
 from qa_agent.models import (
     Flow,
@@ -77,14 +75,14 @@ def test_report_pass_rate_empty() -> None:
     report = Report(
         id="rep_001",
         url="https://example.com",
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
     )
     assert report.pass_rate == 0.0
     assert report.total == 0
 
 
 def test_report_pass_rate() -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     results = [
         TestResult(test_case_id="t1", test_case_name="A", status=TestStatus.PASSED),
         TestResult(test_case_id="t2", test_case_name="B", status=TestStatus.PASSED),

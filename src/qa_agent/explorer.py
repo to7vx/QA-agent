@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
 import re
@@ -9,13 +10,13 @@ import tempfile
 import uuid
 from pathlib import Path
 
-import anthropic
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 from playwright.async_api import async_playwright
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from .config import Settings
+from .llm import APIError, AuthenticationError, LLMClient, RateLimitError
 from .models import Flow, FlowPriority
 from .prompts import EXPLORER_PROMPT, EXPLORER_SYSTEM
 
@@ -69,27 +70,44 @@ _COLLECT_ELEMENTS_JS = """
         if (seenHrefs[href]) return;
         seenHrefs[href] = true;
         var text = trimText(el.textContent, 80);
-        results.push({ type: 'link', text: text, href: href.slice(0, 120), selector: bestSelector(el) });
+        results.push({
+            type: 'link', text: text,
+            href: href.slice(0, 120), selector: bestSelector(el)
+        });
         linkCount++;
     });
 
     // Form inputs
     var inputs = document.querySelectorAll(
-        'input:not([type="hidden"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="image"]), textarea, select'
+        'input:not([type="hidden"]):not([type="button"]):not([type="submit"])' +
+        ':not([type="reset"]):not([type="image"]), textarea, select'
     );
     Array.prototype.forEach.call(inputs, function(el, i) {
         if (i >= MAX_INPUTS) return;
         var labelText = '';
         if (el.labels && el.labels[0]) labelText = trimText(el.labels[0].textContent, 60);
-        if (!labelText) labelText = el.getAttribute('aria-label') || el.getAttribute('placeholder') || '';
-        results.push({
+        if (!labelText) {
+            labelText = el.getAttribute('aria-label')
+                || el.getAttribute('placeholder') || '';
+        }
+        var inputType = el.type || el.tagName.toLowerCase();
+        var entry = {
             type: 'input',
-            input_type: el.type || el.tagName.toLowerCase(),
+            input_type: inputType,
             name: el.name || '',
             placeholder: (el.placeholder || '').slice(0, 60),
             label: labelText.slice(0, 60),
             selector: bestSelector(el)
-        });
+        };
+        // Current state so the LLM does not have to guess.
+        if (inputType === 'checkbox' || inputType === 'radio') {
+            entry.checked = !!el.checked;
+        } else if (el.tagName.toLowerCase() === 'select') {
+            entry.selected_value = (el.value || '').slice(0, 60);
+        } else {
+            entry.current_value = (el.value || '').slice(0, 60);
+        }
+        results.push(entry);
     });
 
     // Forms
@@ -112,6 +130,7 @@ _COLLECT_ELEMENTS_JS = """
 @dataclasses.dataclass
 class PageSnapshot:
     """Everything captured from the browser before calling Claude."""
+
     title: str
     url: str
     html: str
@@ -142,12 +161,14 @@ class ExplorerError(Exception):
 
 
 class Explorer:
-    def __init__(self, settings: Settings, client: anthropic.Anthropic) -> None:
+    def __init__(self, settings: Settings, client: LLMClient) -> None:
         self.settings = settings
         self.client = client
         # Stored after each explore() call so callers can access page context
         # without launching a second browser session.
         self.last_snapshot: PageSnapshot | None = None
+        # Optional Playwright storage_state for authenticated exploration.
+        self.storage_state: dict | None = None
 
     async def explore(self, url: str) -> list[Flow]:
         """Full pipeline: load page → capture → Claude → list[Flow]."""
@@ -170,16 +191,16 @@ class Explorer:
             except Exception as exc:
                 raise ExplorerError(f"Browser error on {url}: {exc}") from exc
 
-            progress.update(task, description="Sending page context to Claude...")
+            progress.update(task, description="Sending page context to the LLM...")
 
             try:
                 flows = self._identify_flows(snapshot)
-            except anthropic.AuthenticationError as exc:
-                raise ExplorerError("Anthropic API key is invalid or missing.") from exc
-            except anthropic.RateLimitError as exc:
-                raise ExplorerError("Anthropic rate limit hit — wait a moment and retry.") from exc
-            except anthropic.APIError as exc:
-                raise ExplorerError(f"Claude API error: {exc}") from exc
+            except AuthenticationError as exc:
+                raise ExplorerError("LLM API key is invalid or missing.") from exc
+            except RateLimitError as exc:
+                raise ExplorerError("LLM rate limit hit — wait a moment and retry.") from exc
+            except APIError as exc:
+                raise ExplorerError(f"LLM API error: {exc}") from exc
 
             progress.update(task, description=f"Done — {len(flows)} flows identified")
 
@@ -189,49 +210,56 @@ class Explorer:
     # Private helpers
     # ------------------------------------------------------------------
 
-    async def _capture_snapshot(
-        self, url: str, progress: Progress, task: object
-    ) -> PageSnapshot:
+    async def _capture_snapshot(self, url: str, progress: Progress, task: object) -> PageSnapshot:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=self.settings.headless)
             try:
-                page = await browser.new_page()
+                # A storage_state-seeded context enables authenticated flows;
+                # None means a fresh anonymous context (default behavior).
+                context = await browser.new_context(storage_state=self.storage_state or None)
+                page = await context.new_page()
                 page.set_default_timeout(30_000)
 
                 progress.update(task, description=f"Navigating to {url}...")
                 await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-
-                # networkidle is best-effort — polling pages (like HN) never reach it
-                try:
-                    await page.wait_for_load_state("networkidle", timeout=8_000)
-                except PlaywrightTimeout:
-                    pass
-
-                progress.update(task, description="Capturing title and HTML...")
-                title = await page.title()
-                html = await page.content()
-                resolved_url = page.url
-
-                progress.update(task, description="Taking screenshot...")
-                tmp_dir = Path(tempfile.mkdtemp(prefix="qa_agent_"))
-                screenshot_path = tmp_dir / "snapshot.png"
-                await page.screenshot(path=str(screenshot_path), full_page=False)
-
-                progress.update(task, description="Extracting interactive elements...")
-                try:
-                    elements: list[dict] = await page.evaluate(_COLLECT_ELEMENTS_JS)
-                except Exception:
-                    elements = []
-
-                progress.update(task, description="Capturing accessibility tree...")
-                try:
-                    ax_raw = await page.accessibility.snapshot()
-                    ax_tree_json = json.dumps(ax_raw or {}, indent=2)
-                except Exception:
-                    ax_tree_json = "{}"
-
+                return await self._capture_from_page(page, url, progress, task)
             finally:
                 await browser.close()
+
+    async def _capture_from_page(
+        self, page: object, url: str, progress: Progress, task: object
+    ) -> PageSnapshot:
+        """Capture a PageSnapshot from an already-navigated page.
+
+        Shared by single-page explore and the multi-page crawler (which drives
+        many pages through one browser context).
+        """
+        # networkidle is best-effort — polling pages (like HN) never reach it
+        with contextlib.suppress(PlaywrightTimeout):
+            await page.wait_for_load_state("networkidle", timeout=8_000)
+
+        progress.update(task, description="Capturing title and HTML...")
+        title = await page.title()
+        html = await page.content()
+        resolved_url = page.url
+
+        progress.update(task, description="Taking screenshot...")
+        tmp_dir = Path(tempfile.mkdtemp(prefix="qa_agent_"))
+        screenshot_path = tmp_dir / "snapshot.png"
+        await page.screenshot(path=str(screenshot_path), full_page=False)
+
+        progress.update(task, description="Extracting interactive elements...")
+        try:
+            elements: list[dict] = await page.evaluate(_COLLECT_ELEMENTS_JS)
+        except Exception:
+            elements = []
+
+        progress.update(task, description="Capturing accessibility tree...")
+        try:
+            ax_raw = await page.accessibility.snapshot()
+            ax_tree_json = json.dumps(ax_raw or {}, indent=2)
+        except Exception:
+            ax_tree_json = "{}"
 
         return PageSnapshot(
             title=title,
@@ -244,26 +272,23 @@ class Explorer:
 
     def _identify_flows(self, snapshot: PageSnapshot) -> list[Flow]:
         context = snapshot.to_prompt_context()
-        response = self.client.messages.create(
-            model=self.settings.model,
-            max_tokens=4_096,
+        raw = self.client.complete(
             system=EXPLORER_SYSTEM,
-            messages=[
-                {"role": "user", "content": EXPLORER_PROMPT.format(context=context)}
-            ],
+            user=EXPLORER_PROMPT.format(context=context),
+            max_tokens=4_096,
         )
-        raw = _strip_fences(response.content[0].text.strip())
+        raw = _strip_fences(raw.strip())
 
         try:
-            flows_data: list[dict] = json.loads(raw)
-        except json.JSONDecodeError as exc:
+            flows_data = _parse_json_tolerant(raw)
+        except ValueError as exc:
             raise ExplorerError(
-                f"Claude returned invalid JSON: {exc}\n\nRaw output:\n{raw[:600]}"
+                f"LLM returned unparseable JSON: {exc}\n\nRaw output:\n{raw[:600]}"
             ) from exc
 
         if not isinstance(flows_data, list):
             raise ExplorerError(
-                f"Expected a JSON array from Claude, got {type(flows_data).__name__}"
+                f"Expected a JSON array from the LLM, got {type(flows_data).__name__}"
             )
 
         flows: list[Flow] = []
@@ -287,8 +312,23 @@ class Explorer:
 # Utilities
 # ---------------------------------------------------------------------------
 
+
 def _strip_fences(text: str) -> str:
     """Remove markdown code fences Claude occasionally adds despite instructions."""
     text = re.sub(r"^```(?:json)?\s*\n?", "", text, flags=re.MULTILINE)
     text = re.sub(r"\n?```\s*$", "", text, flags=re.MULTILINE)
     return text.strip()
+
+
+def _parse_json_tolerant(text: str):
+    """Try strict json.loads first; fall back to json-repair for LLM quirks
+    (smart quotes, trailing commas, single quotes, etc.)."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        from json_repair import repair_json
+
+        repaired = repair_json(text, return_objects=True)
+        if repaired in ("", [], {}, None):
+            raise ValueError("json-repair could not recover any structure") from exc
+        return repaired

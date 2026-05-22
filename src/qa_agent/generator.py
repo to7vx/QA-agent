@@ -7,14 +7,22 @@ import dataclasses
 import json
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
-import anthropic
 from rich.console import Console
-from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 
 from .config import Settings
+from .events import NULL_EMITTER, EventEmitter
+from .llm import LLMClient
 from .models import Flow, TestCase
 from .prompts import GENERATOR_PROMPT, GENERATOR_SYSTEM, REPAIR_PROMPT, REPAIR_SYSTEM
 
@@ -36,6 +44,23 @@ Run headed (see the browser):
 Run a single file:
     uv run pytest generated_tests/test_my_flow_abc123.py -v
 """
+
+import os
+
+import pytest
+
+
+@pytest.fixture
+def browser_context_args(browser_context_args):
+    """Inject a captured login session when QA_STORAGE_STATE_PATH is set.
+
+    The executor points this env var at a temp storage_state file for
+    authenticated runs; with no var set, behavior is unchanged.
+    """
+    state_path = os.environ.get("QA_STORAGE_STATE_PATH")
+    if state_path and os.path.exists(state_path):
+        return {**browser_context_args, "storage_state": state_path}
+    return browser_context_args
 '''
 
 # Placeholder context used when no live page snapshot is available.
@@ -45,6 +70,7 @@ _NO_CONTEXT = "(No page context available — use selectors from the flow steps 
 @dataclasses.dataclass
 class _GenResult:
     """Internal record tracking per-flow generation outcome."""
+
     test_case: TestCase
     syntax_valid: bool
     repaired: bool = False
@@ -56,7 +82,7 @@ class GeneratorError(Exception):
 
 
 class Generator:
-    def __init__(self, settings: Settings, client: anthropic.Anthropic) -> None:
+    def __init__(self, settings: Settings, client: LLMClient) -> None:
         self.settings = settings
         self.client = client
         self._results: list[_GenResult] = []
@@ -65,7 +91,12 @@ class Generator:
     # Public API
     # ------------------------------------------------------------------
 
-    def generate(self, flows: list[Flow], page_context: str = "") -> list[TestCase]:
+    def generate(
+        self,
+        flows: list[Flow],
+        page_context: str = "",
+        emitter: EventEmitter | None = None,
+    ) -> list[TestCase]:
         """Generate a TestCase for each flow. Returns all TestCases including
         any that needed syntax repair — callers should check that files are
         written before executing them."""
@@ -74,6 +105,7 @@ class Generator:
 
         self._results = []
         ctx = page_context or _NO_CONTEXT
+        emit = emitter or NULL_EMITTER
 
         with Progress(
             SpinnerColumn(),
@@ -92,8 +124,19 @@ class Generator:
                 if result.repaired:
                     console.print(f"  [yellow]Repaired syntax[/yellow] in {flow.name}")
                 elif not result.syntax_valid:
-                    console.print(f"  [red]Syntax error remains[/red] in {flow.name} — check before running")
+                    console.print(
+                        f"  [red]Syntax error remains[/red] in {flow.name} — check before running"
+                    )
                 progress.advance(task)
+                emit.emit(
+                    "generate",
+                    "item_done",
+                    f"Generated test for {flow.name}",
+                    flow_id=flow.id,
+                    flow_name=flow.name,
+                    syntax_valid=result.syntax_valid,
+                    repaired=result.repaired,
+                )
 
         return [r.test_case for r in self._results]
 
@@ -121,14 +164,14 @@ class Generator:
     # ------------------------------------------------------------------
 
     def _generate_one(self, flow: Flow, page_context: str) -> _GenResult:
-        code = self._call_claude_generate(flow, page_context)
+        code = self._call_llm_generate(flow, page_context)
         code = _strip_fences(code)
 
         syntax_error = _check_syntax(code)
         repaired = False
 
         if syntax_error:
-            repaired_code = self._call_claude_repair(code, syntax_error)
+            repaired_code = self._call_llm_repair(code, syntax_error)
             repaired_code = _strip_fences(repaired_code)
             second_error = _check_syntax(repaired_code)
             if second_error is None:
@@ -139,9 +182,7 @@ class Generator:
                 # Repair failed — prepend error as a comment so the file is
                 # still importable but clearly marked as broken.
                 code = (
-                    f"# SYNTAX ERROR — repair failed. Original error:\n"
-                    f"# {syntax_error}\n\n"
-                    + code
+                    f"# SYNTAX ERROR — repair failed. Original error:\n# {syntax_error}\n\n" + code
                 )
 
         test_id = f"test_{uuid.uuid4().hex[:8]}"
@@ -164,36 +205,22 @@ class Generator:
             syntax_error=syntax_error,
         )
 
-    def _call_claude_generate(self, flow: Flow, page_context: str) -> str:
-        response = self.client.messages.create(
-            model=self.settings.model,
-            max_tokens=4_096,
+    def _call_llm_generate(self, flow: Flow, page_context: str) -> str:
+        return self.client.complete(
             system=GENERATOR_SYSTEM,
-            messages=[
-                {
-                    "role": "user",
-                    "content": GENERATOR_PROMPT.format(
-                        flow_json=flow.model_dump_json(indent=2),
-                        page_context=page_context[:6_000],  # cap to stay within budget
-                    ),
-                }
-            ],
-        )
-        return response.content[0].text.strip()
-
-    def _call_claude_repair(self, code: str, error: str) -> str:
-        response = self.client.messages.create(
-            model=self.settings.model,
+            user=GENERATOR_PROMPT.format(
+                flow_json=flow.model_dump_json(indent=2),
+                page_context=page_context[:6_000],  # cap to stay within budget
+            ),
             max_tokens=4_096,
+        ).strip()
+
+    def _call_llm_repair(self, code: str, error: str) -> str:
+        return self.client.complete(
             system=REPAIR_SYSTEM,
-            messages=[
-                {
-                    "role": "user",
-                    "content": REPAIR_PROMPT.format(error=error, code=code),
-                }
-            ],
-        )
-        return response.content[0].text.strip()
+            user=REPAIR_PROMPT.format(error=error, code=code),
+            max_tokens=4_096,
+        ).strip()
 
     def _build_manifest(self, test_cases: list[TestCase], url: str) -> dict:
         result_map = {r.test_case.id: r for r in self._results}
@@ -213,7 +240,7 @@ class Generator:
                 }
             )
         return {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
             "url": url,
             "model": self.settings.model,
             "flows_count": len(test_cases),
@@ -225,6 +252,7 @@ class Generator:
 # ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
+
 
 def _check_syntax(code: str) -> str | None:
     """Return an error string if code fails ast.parse(), else None."""

@@ -4,53 +4,76 @@ Autonomous AI-powered browser testing agent: given a URL, it explores the page, 
 
 ## Goal
 
-Build a CLI tool that replaces manual test authoring for web UIs. The agent should be runnable by a developer in under 60 seconds: `qa-agent run <URL>` → working test suite + report.
+Started as a CLI that replaces manual test authoring for web UIs (`qa-agent run <URL>` →
+working test suite + report). Now also a **multi-tenant SaaS**: a FastAPI service +
+Next.js dashboard wrapping the same pipeline, with persisted run history, analytics, BYOK
+keys, authenticated flows, and multi-page crawl + parallel execution.
 
-## v1 Scope
+## Scope
 
-**In:** URL in → explore → generate tests → execute → markdown report
+**CLI (v1, done):** URL in → explore → generate tests → execute → self-heal → markdown report
 
-**Out (post-v1):** dashboard, REST API, self-healing tests, multi-page crawling, CI integration, parallel execution
+**Full product (done):** FastAPI REST API + SSE progress streaming, Postgres/Supabase
+persistence, Next.js dashboard, Supabase auth (multi-tenant, owner-scoped + RLS), BYOK
+provider keys, authenticated flows (storage_state), multi-page crawl, parallel execution.
 
 ## Stack
 
-- Python 3.11+
-- Playwright (async API) — browser automation and page capture
-- Anthropic SDK (`claude-sonnet-4-6`) — flow identification and test generation
-- Pydantic v2 — all inter-module data models
-- Rich — CLI output only
-- pytest + pytest-asyncio — testing the agent itself
+- Python 3.11+ · Playwright (async API) · LiteLLM (Claude **or** Gemini) · Pydantic v2
+- Rich (CLI output) · Click (CLI) · pytest + pytest-asyncio
+- **API:** FastAPI · SQLAlchemy 2.0 · Alembic · asyncpg/psycopg · sse-starlette · PyJWT · cryptography (Fernet)
+- **Web:** Next.js 14 (App Router) · TanStack Query · Recharts · Tailwind · @supabase/ssr
 - uv — package management
 
 ## Architecture
 
 ```
 src/qa_agent/
-├── agent.py        orchestrator — ties all modules together, owns the run() loop
-├── explorer.py     Playwright page capture → Claude → list[Flow]
-├── generator.py    list[Flow] → Claude → list[TestCase] + writes .py files
-├── executor.py     list[TestCase] → subprocess pytest → list[TestResult]
+├── agent.py        orchestrator — owns run(); emits ProgressEvents; CLI-safe
+├── explorer.py     Playwright capture → LLM → list[Flow]  (_capture_from_page reused by crawler)
+├── crawler.py      BFS same-origin crawl → flows per page (reuses explorer)
+├── generator.py    list[Flow] → LLM → list[TestCase] + writes .py files (+ storage_state conftest)
+├── executor.py     list[TestCase] → subprocess pytest → list[TestResult]; run_parallel()
+├── healer.py       selector-failure repair (confidence-gated, audited)
 ├── reporter.py     Report → markdown file + Rich CLI summary
-├── models.py       all Pydantic types: Flow, TestCase, TestResult, Report
-├── prompts.py      all Claude prompt strings as module-level constants
-├── config.py       Settings (pydantic-settings + dotenv)
-└── cli.py          Click entry point: `qa-agent run <URL>`
+├── events.py       ProgressEvent / EventEmitter (pipeline → SSE/persistence)
+├── auth.py         capture/inject Playwright storage_state (authenticated flows)
+├── models.py       Pydantic types: Flow, TestCase, TestResult, Report, AuthProfile, …
+├── prompts.py      all LLM prompt strings as module-level constants
+├── config.py       core Settings (pydantic-settings + dotenv)
+├── cli.py          Click entry: run / explore / generate / execute / auth capture
+├── store/          SQLAlchemy ORM + owner-scoped RunRepository + engine/mappers
+└── api/            FastAPI app: routers, JobManager, EventBus, auth (Supabase JWT),
+                    BYOK (byok.py), profiles, SSRF guard (security.py), crypto
+alembic/            migrations (initial schema + Postgres RLS policies)
+web/                Next.js dashboard (Vercel)
 ```
+
+Entry points: `qa-agent` (CLI) and `qa-agent-api` (FastAPI service).
 
 ## Conventions
 
-- **Prompts:** defined in `prompts.py` only — never inline strings passed to the Anthropic client
+- **Prompts:** defined in `prompts.py` only — never inline strings passed to the LLM client
 - **Module boundaries:** data crossing between modules must use Pydantic models from `models.py`
-- **Playwright:** always async (`async_playwright`, `async def`, `await`)
+- **Playwright:** exploration/crawl async; healer uses sync API (safe from sync executor)
 - **CLI output:** Rich only — no bare `print()` in agent code
-- **Config:** all env vars go through `config.py:Settings` — no `os.environ` reads elsewhere
-- **Tests:** `tests/` covers the agent's own logic; generated tests live in `generated_tests/`
+- **Config:** core env vars through `config.py:Settings`; API-only config in `api/settings.py:ApiSettings`
+- **Pipeline stays CLI-safe & DB-agnostic:** the API *injects* progress hooks, per-user
+  BYOK keys, and auth — `agent.py` never imports `api`/`store`. `on_event=None` → CLI unchanged.
+- **Multi-tenancy:** every store row carries `owner_id`; `RunRepository` filters by it on
+  every call; Postgres RLS is defense-in-depth. Never add a cross-tenant read path.
+- **Secrets:** provider keys + storage states are Fernet-encrypted at rest; never returned
+  to clients or logged. User-submitted URLs pass `security.validate_target_url` (SSRF).
+- **Tests:** `tests/` covers the agent + store + API (offline via fakes; SQLite, no Docker);
+  generated tests live in `generated_tests/`.
 
 ## Status
 
-- [x] Scaffolding complete — all modules exist, models defined, CLI skeleton wired
-- [ ] Explorer — in progress next
-- [ ] Generator
-- [ ] Executor
-- [ ] Reporter
-- [ ] CLI wired end-to-end
+- [x] CLI pipeline (explore → generate → execute → self-heal → report)
+- [x] Persistence layer (SQLAlchemy + Alembic, owner-scoped) + Postgres RLS
+- [x] FastAPI service: runs/analytics/settings/auth-profiles, SSE streaming, JobManager
+- [x] Supabase auth (multi-tenant) + BYOK provider keys + SSRF guard + per-user quotas
+- [x] Next.js dashboard (overview, runs, live run detail, analytics, settings, login)
+- [x] Authenticated flows (storage_state capture + injection)
+- [x] Multi-page crawl + parallel execution
+- [x] 75 tests passing (`uv run pytest`)

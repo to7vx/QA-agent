@@ -21,51 +21,56 @@ _PRIORITY_STYLE = {
 
 @click.group()
 def cli() -> None:
-    """Autonomous AI QA agent powered by Claude and Playwright."""
+    """Autonomous AI QA agent. Powered by an LLM (Claude or Gemini) + Playwright."""
 
 
 # ---------------------------------------------------------------------------
 # explore
 # ---------------------------------------------------------------------------
 
+
 @cli.command()
 @click.argument("url")
 @click.option("--headless/--headed", default=True, help="Run browser in headless mode.")
-@click.option("--model", default=None, help="Claude model override.")
+@click.option(
+    "--model",
+    default=None,
+    help="LiteLLM model string, e.g. 'gemini/gemini-2.0-flash' or 'anthropic/claude-sonnet-4-6'.",
+)
 def explore(url: str, headless: bool, model: str | None) -> None:
     """Discover user flows on a page without generating or running tests."""
-    import anthropic
     from pydantic import ValidationError
 
     from .config import get_settings
     from .explorer import Explorer, ExplorerError
+    from .llm import LLMClient
 
     try:
-        settings = get_settings()
-    except ValidationError:
-        console.print(
-            "[red]Error:[/red] ANTHROPIC_API_KEY is not set.\n"
-            "Copy [dim].env.example[/dim] to [dim].env[/dim] and add your key."
-        )
-        raise SystemExit(1)
+        if model:
+            import os
 
-    if model:
-        settings.model = model
+            os.environ["QA_AGENT_MODEL"] = model
+        settings = get_settings()
+    except ValidationError as exc:
+        _print_config_error(exc)
+        raise SystemExit(1) from None
+
     settings.headless = headless
+    url = _normalize_url(url)
 
     console.print(f"\n[bold cyan]qa-agent explore[/bold cyan] {url}\n")
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    client = LLMClient(settings)
     explorer = Explorer(settings, client)
 
     try:
         flows = asyncio.run(explorer.explore(url))
     except ExplorerError as exc:
         console.print(f"\n[red]Exploration failed:[/red] {exc}")
-        raise SystemExit(1)
+        raise SystemExit(1) from None
     except KeyboardInterrupt:
         console.print("\n[yellow]Cancelled.[/yellow]")
-        raise SystemExit(0)
+        raise SystemExit(0) from None
 
     _print_flows(flows, url)
 
@@ -74,39 +79,45 @@ def explore(url: str, headless: bool, model: str | None) -> None:
 # generate
 # ---------------------------------------------------------------------------
 
+
 @cli.command()
 @click.argument("url")
 @click.option("--headless/--headed", default=True, help="Run browser in headless mode.")
-@click.option("--model", default=None, help="Claude model override.")
+@click.option(
+    "--model",
+    default=None,
+    help="LiteLLM model string, e.g. 'gemini/gemini-2.0-flash' or 'anthropic/claude-sonnet-4-6'.",
+)
 @click.option("--out", default=None, help="Output directory (overrides QA_AGENT_OUTPUT_DIR).")
 def generate(url: str, headless: bool, model: str | None, out: str | None) -> None:
     """Explore a URL, then generate and save Playwright test files."""
-    import anthropic
     from pydantic import ValidationError
-    from rich.table import Table
     from rich import box
+    from rich.table import Table
 
     from .config import get_settings
     from .explorer import Explorer, ExplorerError
-    from .generator import Generator, GeneratorError
+    from .generator import Generator
+    from .llm import LLMClient
 
     try:
-        settings = get_settings()
-    except ValidationError:
-        console.print(
-            "[red]Error:[/red] ANTHROPIC_API_KEY is not set.\n"
-            "Copy [dim].env.example[/dim] to [dim].env[/dim] and add your key."
-        )
-        raise SystemExit(1)
+        if model:
+            import os
 
-    if model:
-        settings.model = model
+            os.environ["QA_AGENT_MODEL"] = model
+        settings = get_settings()
+    except ValidationError as exc:
+        _print_config_error(exc)
+        raise SystemExit(1) from None
+
     if out:
         from pathlib import Path
+
         settings.output_dir = Path(out)
     settings.headless = headless
+    url = _normalize_url(url)
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    client = LLMClient(settings)
 
     # Step 1: Explore
     console.print(f"\n[bold cyan]qa-agent generate[/bold cyan] {url}\n")
@@ -116,18 +127,16 @@ def generate(url: str, headless: bool, model: str | None, out: str | None) -> No
         flows = asyncio.run(explorer.explore(url))
     except ExplorerError as exc:
         console.print(f"\n[red]Exploration failed:[/red] {exc}")
-        raise SystemExit(1)
+        raise SystemExit(1) from None
     except KeyboardInterrupt:
         console.print("\n[yellow]Cancelled.[/yellow]")
-        raise SystemExit(0)
+        raise SystemExit(0) from None
 
     if not flows:
         console.print("[yellow]No flows identified — nothing to generate.[/yellow]")
         raise SystemExit(0)
 
-    page_context = (
-        explorer.last_snapshot.to_prompt_context() if explorer.last_snapshot else ""
-    )
+    page_context = explorer.last_snapshot.to_prompt_context() if explorer.last_snapshot else ""
     console.print(f"  Found [bold]{len(flows)}[/bold] flows\n")
 
     # Step 2: Generate
@@ -137,7 +146,7 @@ def generate(url: str, headless: bool, model: str | None, out: str | None) -> No
         test_cases = gen.generate(flows, page_context=page_context)
     except KeyboardInterrupt:
         console.print("\n[yellow]Cancelled.[/yellow]")
-        raise SystemExit(0)
+        raise SystemExit(0) from None
 
     manifest_path = gen.write(test_cases, url=url)
 
@@ -153,14 +162,17 @@ def generate(url: str, headless: bool, model: str | None, out: str | None) -> No
 
     for tc in test_cases:
         from pathlib import Path as _Path
+
         fname = _Path(tc.file_path).name
         pval = flow_priority.get(tc.flow_id, "?")
         pcolor = _PRIORITY_STYLE.get(pval, "white")
         r = result_map.get(tc.id)
         syntax_str = (
-            "[green]OK[/green]" if (r and r.syntax_valid) else
-            "[yellow]repaired[/yellow]" if (r and r.repaired) else
-            "[red]error[/red]"
+            "[green]OK[/green]"
+            if (r and r.syntax_valid)
+            else "[yellow]repaired[/yellow]"
+            if (r and r.repaired)
+            else "[red]error[/red]"
         )
         table.add_row(fname, tc.name, f"[{pcolor}]{pval}[/{pcolor}]", syntax_str)
 
@@ -171,43 +183,52 @@ def generate(url: str, headless: bool, model: str | None, out: str | None) -> No
         f"to [dim]{settings.output_dir}/[/dim]"
     )
     console.print(f"Manifest: [dim]{manifest_path}[/dim]")
-    console.print(
-        f"\nRun them: [bold]uv run pytest {settings.output_dir}/ -v[/bold]\n"
-    )
+    console.print(f"\nRun them: [bold]uv run pytest {settings.output_dir}/ -v[/bold]\n")
 
 
 # ---------------------------------------------------------------------------
 # execute
 # ---------------------------------------------------------------------------
 
+
 @cli.command()
-@click.option("--dir", "out_dir", default=None, help="generated_tests/ directory (default: from .env).")
+@click.option(
+    "--dir",
+    "out_dir",
+    default=None,
+    help="generated_tests/ directory (default: from .env).",
+)
 @click.option("--headed", is_flag=True, default=False, help="Run browser in visible window.")
-@click.option("--no-heal", "no_heal", is_flag=True, default=False, help="Disable self-healing (useful for debugging).")
+@click.option(
+    "--no-heal",
+    "no_heal",
+    is_flag=True,
+    default=False,
+    help="Disable self-healing (useful for debugging).",
+)
 def execute(out_dir: str | None, headed: bool, no_heal: bool) -> None:
     """Run whatever tests are in generated_tests/ and show live results."""
-    import anthropic as _anthropic
     from pydantic import ValidationError
 
     from .config import get_settings
     from .executor import Executor
     from .healer import Healer
+    from .llm import LLMClient
 
     try:
         settings = get_settings()
-    except ValidationError:
-        console.print(
-            "[red]Error:[/red] ANTHROPIC_API_KEY is not set.\n"
-            "Copy [dim].env.example[/dim] to [dim].env[/dim] and add your key."
-        )
-        raise SystemExit(1)
+    except ValidationError as exc:
+        _print_config_error(exc)
+        raise SystemExit(1) from None
 
     if out_dir:
         from pathlib import Path
+
         settings.output_dir = Path(out_dir)
 
     if headed:
         import os
+
         os.environ["HEADED"] = "1"
 
     executor = Executor(settings)
@@ -230,16 +251,18 @@ def execute(out_dir: str | None, headed: bool, no_heal: bool) -> None:
     healer = None
     if not no_heal:
         try:
-            client = _anthropic.Anthropic(api_key=settings.anthropic_api_key)
-            healer = Healer(settings, client, settings.model)
+            client = LLMClient(settings)
+            healer = Healer(settings, client)
         except Exception:
-            console.print("[yellow]Could not initialise healer — running without self-healing.[/yellow]")
+            console.print(
+                "[yellow]Could not initialise healer — running without self-healing.[/yellow]"
+            )
 
     try:
         results, healing_attempts = executor.run(test_cases, healer=healer)
     except KeyboardInterrupt:
         console.print("\n[yellow]Cancelled.[/yellow]")
-        raise SystemExit(0)
+        raise SystemExit(0) from None
 
     raw_path = executor.save_raw_results(results, healing_attempts)
 
@@ -253,8 +276,7 @@ def execute(out_dir: str | None, headed: bool, no_heal: bool) -> None:
         f"[green]{passed} passed[/green]  "
         f"[red]{failed} failed[/red]  "
         f"[yellow]{skipped} skipped[/yellow]  "
-        f"of {len(results)} total"
-        + (f"  [green]({healed} self-healed)[/green]" if healed else "")
+        f"of {len(results)} total" + (f"  [green]({healed} self-healed)[/green]" if healed else "")
     )
     if healing_attempts:
         refused = sum(1 for a in healing_attempts if a.outcome == "refused")
@@ -275,47 +297,179 @@ def execute(out_dir: str | None, headed: bool, no_heal: bool) -> None:
 # run  (full pipeline)
 # ---------------------------------------------------------------------------
 
+
 @cli.command()
 @click.argument("url")
 @click.option("--headless/--headed", default=True, help="Run browser in headless mode.")
-@click.option("--model", default=None, help="Claude model override.")
-@click.option("--open", "open_report", is_flag=True, default=False, help="Open report in default viewer after run.")
-@click.option("--no-heal", "no_heal", is_flag=True, default=False, help="Disable self-healing (useful for debugging).")
-def run(url: str, headless: bool, model: str | None, open_report: bool, no_heal: bool) -> None:
+@click.option(
+    "--model",
+    default=None,
+    help="LiteLLM model string, e.g. 'gemini/gemini-2.0-flash' or 'anthropic/claude-sonnet-4-6'.",
+)
+@click.option(
+    "--open",
+    "open_report",
+    is_flag=True,
+    default=False,
+    help="Open report in default viewer after run.",
+)
+@click.option(
+    "--no-heal",
+    "no_heal",
+    is_flag=True,
+    default=False,
+    help="Disable self-healing (useful for debugging).",
+)
+@click.option(
+    "--auth-state",
+    "auth_state",
+    default=None,
+    type=click.Path(exists=True),
+    help="Path to a Playwright storage_state JSON (from 'qa-agent auth capture') "
+    "for authenticated testing.",
+)
+@click.option(
+    "--crawl",
+    is_flag=True,
+    default=False,
+    help="Crawl same-origin pages from the start URL instead of testing a single page.",
+)
+@click.option(
+    "--max-pages",
+    "max_pages",
+    default=5,
+    show_default=True,
+    help="Max pages to crawl (with --crawl).",
+)
+@click.option(
+    "--parallel",
+    "parallel",
+    default=1,
+    show_default=True,
+    help="Run tests concurrently with N workers.",
+)
+def run(
+    url: str,
+    headless: bool,
+    model: str | None,
+    open_report: bool,
+    no_heal: bool,
+    auth_state: str | None,
+    crawl: bool,
+    max_pages: int,
+    parallel: int,
+) -> None:
     """Full pipeline: explore -> generate -> execute -> report."""
-    import anthropic
+    import json
+
     from pydantic import ValidationError
 
-    from .config import get_settings
     from .agent import QAAgent
+    from .auth import origin_of
+    from .config import get_settings
+    from .models import AuthProfile
 
     try:
-        settings = get_settings()
-    except ValidationError:
-        console.print(
-            "[red]Error:[/red] ANTHROPIC_API_KEY is not set.\n"
-            "Copy [dim].env.example[/dim] to [dim].env[/dim] and add your key."
-        )
-        raise SystemExit(1)
+        if model:
+            import os
 
-    if model:
-        settings.model = model
+            os.environ["QA_AGENT_MODEL"] = model
+        settings = get_settings()
+    except ValidationError as exc:
+        _print_config_error(exc)
+        raise SystemExit(1) from None
+
     settings.headless = headless
+    url = _normalize_url(url)
+
+    auth: AuthProfile | None = None
+    if auth_state:
+        with open(auth_state, encoding="utf-8") as f:
+            state = json.load(f)
+        auth = AuthProfile(id="cli", name="cli", origin=origin_of(url), storage_state=state)
 
     try:
         report = asyncio.run(
-            QAAgent(settings).run(url, open_report=open_report, heal=not no_heal)
+            QAAgent(settings).run(
+                url,
+                open_report=open_report,
+                heal=not no_heal,
+                auth=auth,
+                mode="crawl" if crawl else "single",
+                max_pages=max_pages,
+                parallelism=parallel,
+            )
         )
     except KeyboardInterrupt:
         console.print("\n[yellow]Cancelled.[/yellow]")
-        raise SystemExit(0)
+        raise SystemExit(0) from None
 
     raise SystemExit(0 if report.failed == 0 else 1)
 
 
 # ---------------------------------------------------------------------------
+# auth  (capture a login session for authenticated testing)
+# ---------------------------------------------------------------------------
+
+
+@cli.group()
+def auth() -> None:
+    """Manage captured login sessions for authenticated testing."""
+
+
+@auth.command("capture")
+@click.argument("login_url")
+@click.option(
+    "--out",
+    "out_path",
+    default="storage_state.json",
+    type=click.Path(),
+    help="Where to write the captured storage_state JSON.",
+)
+def auth_capture(login_url: str, out_path: str) -> None:
+    """Open a browser at LOGIN_URL, log in by hand, then save the session.
+
+    The captured state can be passed to `qa-agent run <url> --auth-state <file>`.
+    """
+    import json
+
+    from .auth import capture_storage_state
+
+    login_url = _normalize_url(login_url)
+    console.print(f"[cyan]Opening[/cyan] {login_url} — log in, then close the browser window.")
+    try:
+        state = asyncio.run(capture_storage_state(login_url, headless=False))
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Cancelled.[/yellow]")
+        raise SystemExit(0) from None
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2)
+    n_cookies = len(state.get("cookies", []))
+    console.print(f"[green]Saved[/green] session ({n_cookies} cookies) to [bold]{out_path}[/bold]")
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _normalize_url(url: str) -> str:
+    """Prepend https:// if the user passed a bare host like 'demoqa.com'."""
+    if "://" not in url:
+        return "https://" + url
+    return url
+
+
+def _print_config_error(exc: Exception) -> None:
+    console.print(
+        f"[red]Config error:[/red] {exc}\n\n"
+        "Set the API key matching your QA_AGENT_MODEL:\n"
+        "  [dim]ANTHROPIC_API_KEY=...[/dim]   for QA_AGENT_MODEL=anthropic/claude-*\n"
+        "  [dim]GEMINI_API_KEY=...[/dim]      for QA_AGENT_MODEL=gemini/gemini-*\n\n"
+        "Copy [dim].env.example[/dim] to [dim].env[/dim] and fill it in."
+    )
+
 
 def _print_flows(flows: list, url: str) -> None:
     from .models import FlowPriority
@@ -324,12 +478,12 @@ def _print_flows(flows: list, url: str) -> None:
         console.print("[yellow]No flows identified.[/yellow]")
         return
 
-    console.print(
-        f"\n[bold green]{len(flows)} user flow(s) identified[/bold green] on {url}\n"
-    )
+    console.print(f"\n[bold green]{len(flows)} user flow(s) identified[/bold green] on {url}\n")
 
     for i, flow in enumerate(flows, 1):
-        priority_val = flow.priority.value if isinstance(flow.priority, FlowPriority) else str(flow.priority)
+        priority_val = (
+            flow.priority.value if isinstance(flow.priority, FlowPriority) else str(flow.priority)
+        )
         color = _PRIORITY_STYLE.get(priority_val, "white")
 
         # Steps table rendered inside the panel

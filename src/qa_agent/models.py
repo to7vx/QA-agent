@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
@@ -30,6 +30,18 @@ class Flow(BaseModel):
     priority: FlowPriority = FlowPriority.MEDIUM
     steps: list[FlowStep] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
+
+
+class AuthProfile(BaseModel):
+    """A captured login session (Playwright storage_state) for authed testing."""
+
+    id: str
+    name: str
+    origin: str = ""
+    # Playwright storage_state: {"cookies": [...], "origins": [...]}.
+    storage_state: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    expires_at: datetime | None = None
 
 
 class TestStatus(str, Enum):
@@ -60,7 +72,7 @@ class HealingAttempt(BaseModel):
     reasoning: str = ""
     # healed | failed | refused | error
     outcome: str = "pending"
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class TestResult(BaseModel):

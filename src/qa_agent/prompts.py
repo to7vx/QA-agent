@@ -63,8 +63,10 @@ Return the JSON array only. No other text.\
 
 GENERATOR_SYSTEM = """\
 You are an expert Python QA engineer writing Playwright tests.
-Tests use pytest-playwright: the `page` fixture is an async Playwright Page
-already connected to a Chromium browser. Test functions are `async def test_*`.
+Tests use pytest-playwright with the SYNCHRONOUS API: the `page` fixture is a
+sync Playwright Page already connected to a Chromium browser. Test functions
+are plain `def test_*` — NEVER `async def`. NEVER use `await`. NEVER import
+from `playwright.async_api`.
 You write tests that are readable, maintainable, and resilient to minor UI changes.
 Return only valid Python source code — no markdown fences, no explanation, no prose.\
 """
@@ -89,37 +91,57 @@ Generate a runnable pytest-playwright test file for the user flow below.
 
 Combine selectors with `.filter()` or `.nth()` when the page has duplicate roles.
 
-## Required test structure
+## Required test structure (SYNC API — no async, no await)
 ```python
 \"\"\"<One sentence: what this test file covers.>\"\"\"
-import pytest
-from playwright.async_api import Page, expect
+from playwright.sync_api import Page, expect
 
 
-async def test_<snake_case_flow_name>(page: Page) -> None:
+def test_<snake_case_flow_name>(page: Page) -> None:
     \"\"\"<One sentence describing what success looks like.>\"\"\"
     # --- Arrange: navigate to starting URL ---
-    await page.goto("<url>", wait_until="domcontentloaded")
+    page.goto("<url>", wait_until="domcontentloaded")
     try:
-        await page.wait_for_load_state("networkidle", timeout=5_000)
+        page.wait_for_load_state("networkidle", timeout=5_000)
     except Exception:
         pass  # page may have long-polling; proceed anyway
 
     # --- Act: <step group description> ---
     # <comment explaining why this action matters>
-    await page.get_by_role(...).click()
+    page.get_by_role(...).click()
 
     # --- Assert: <what we verify> ---
-    await expect(page.get_by_role(...)).to_be_visible()
+    expect(page.get_by_role(...)).to_be_visible()
 ```
 
 ## Code rules
 - One function per file, named `test_<flow_name_in_snake_case>`
+- Test function is `def`, NOT `async def`. No `await` anywhere in the file.
+- Import only from `playwright.sync_api` — never `playwright.async_api`.
 - Module docstring at the top (one sentence)
 - Function docstring (one sentence describing success)
 - One comment per logical step block explaining intent, not mechanics
-- Use `await expect(locator).to_be_visible()` — not bare `assert`
-- Use `await expect(page).to_have_url(pattern)` for URL assertions
+- Use `expect(locator).to_be_visible()` — not bare `assert`
+- Use `expect(page).to_have_url(pattern)` for URL assertions
+- Stateful inputs (checkbox, radio, toggle, select):
+  - Never assume the initial state. The page snapshot includes `checked` /
+    `selected_value` / `current_value` — read those before asserting.
+  - Prefer the idempotent helpers `locator.check()` and `locator.uncheck()`
+    over `.click()` — they no-op if the input is already in the target state,
+    so the test stays correct regardless of initial state.
+  - For `<select>`, use `locator.select_option(value=...)`, then assert with
+    `expect(locator).to_have_value(...)`.
+  - After `check()` assert `to_be_checked()`; after `uncheck()` assert
+    `not_to_be_checked()`. Never click and then assert the opposite of what
+    you guessed the previous state was.
+- Text assertions:
+  - Prefer `expect(locator).to_contain_text("stable substring")` when the surrounding
+    text may vary (A/B tests, timestamps, counts, dynamic IDs).
+  - `to_have_text` does an EXACT string match — never put regex syntax like
+    `|`, `(...)`, `.*`, `?` inside a plain string. If you need a pattern, import
+    `re` and pass `re.compile(r"A/B Test (Control|Variation 1)")` instead.
+  - Same rule for `to_have_url`: use `re.compile(...)` for patterns, not raw
+    strings with regex metacharacters.
 - Wrap every `wait_for_load_state("networkidle")` in try/except — pages with polling never settle
 - No `time.sleep()`, no `asyncio.sleep()`, no hardcoded numeric waits
 - The final lines must contain at least one `expect(...)` assertion

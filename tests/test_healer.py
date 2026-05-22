@@ -5,10 +5,10 @@ from __future__ import annotations
 from qa_agent.healer import _apply_selector, _extract_url, _refused_attempt
 from qa_agent.models import TestCase
 
-
 # ---------------------------------------------------------------------------
 # _extract_url
 # ---------------------------------------------------------------------------
+
 
 def test_extract_url_double_quotes() -> None:
     code = 'await page.goto("https://example.com/login", wait_until="domcontentloaded")'
@@ -79,6 +79,7 @@ def test_apply_selector_get_by_role() -> None:
 # ---------------------------------------------------------------------------
 # _refused_attempt
 # ---------------------------------------------------------------------------
+
 
 def _make_tc(name: str = "login") -> TestCase:
     return TestCase(id="t1", flow_id="f1", name=name, description="")

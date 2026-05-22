@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import anthropic
 from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from .models import HealingAttempt, Report, TestResult, TestStatus
+from .llm import LLMClient
+from .models import Report, TestResult, TestStatus
 from .prompts import (
     ANALYZE_FAILURE_PROMPT,
     ANALYZE_FAILURE_SYSTEM,
@@ -28,9 +28,9 @@ if TYPE_CHECKING:
 console = Console()
 
 _STATUS_ICON = {
-    TestStatus.PASSED:  "PASSED",
-    TestStatus.FAILED:  "FAILED",
-    TestStatus.ERROR:   "ERROR",
+    TestStatus.PASSED: "PASSED",
+    TestStatus.FAILED: "FAILED",
+    TestStatus.ERROR: "ERROR",
     TestStatus.SKIPPED: "SKIPPED",
     TestStatus.PENDING: "PENDING",
     TestStatus.RUNNING: "RUNNING",
@@ -41,11 +41,12 @@ class Reporter:
     def __init__(
         self,
         report_dir: Path,
-        client: anthropic.Anthropic | None = None,
-        model: str = "claude-sonnet-4-6",
+        client: LLMClient | None = None,
+        model: str | None = None,
     ) -> None:
         self.report_dir = report_dir
         self.client = client
+        # model kept for back-compat; LLMClient already owns the model string
         self.model = model
 
     # ------------------------------------------------------------------
@@ -53,7 +54,7 @@ class Reporter:
     # ------------------------------------------------------------------
 
     def finalize(self, report: Report, open_after: bool = False) -> Report:
-        report.finished_at = datetime.now(timezone.utc)
+        report.finished_at = datetime.now(UTC)
         self.report_dir.mkdir(parents=True, exist_ok=True)
 
         # Per-failure AI analysis (only if client available)
@@ -68,7 +69,7 @@ class Reporter:
 
         md = _render_markdown(report, fix_suggestions, ai_analysis)
 
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         named_path = self.report_dir / f"report_{ts}_{report.id[:8]}.md"
         latest_path = self.report_dir / "latest.md"
 
@@ -87,13 +88,10 @@ class Reporter:
         total = report.total
         rate = report.pass_rate
 
-        verdict_style = (
-            "bold green" if failed == 0
-            else "bold yellow" if rate >= 50
-            else "bold red"
-        )
+        verdict_style = "bold green" if failed == 0 else "bold yellow" if rate >= 50 else "bold red"
         verdict_text = (
-            "[bold green]All tests passed[/bold green]" if failed == 0
+            "[bold green]All tests passed[/bold green]"
+            if failed == 0
             else f"[bold red]{failed} test(s) failed[/bold red]"
         )
 
@@ -116,16 +114,18 @@ class Reporter:
 
         for result in report.results:
             status_str = {
-                TestStatus.PASSED:  "[bold green]PASSED[/bold green]",
-                TestStatus.FAILED:  "[bold red]FAILED[/bold red]",
-                TestStatus.ERROR:   "[bold red]ERROR[/bold red]",
+                TestStatus.PASSED: "[bold green]PASSED[/bold green]",
+                TestStatus.FAILED: "[bold red]FAILED[/bold red]",
+                TestStatus.ERROR: "[bold red]ERROR[/bold red]",
                 TestStatus.SKIPPED: "[yellow]SKIPPED[/yellow]",
             }.get(result.status, result.status.value)
 
             dur = f"{result.duration_ms:.0f} ms" if result.duration_ms else ""
             err = (result.error_message or "")[:100]
 
-            table.add_row(result.test_case_name, status_str, dur, f"[dim]{err}[/dim]" if err else "")
+            table.add_row(
+                result.test_case_name, status_str, dur, f"[dim]{err}[/dim]" if err else ""
+            )
 
         console.print(
             Panel(
@@ -161,8 +161,10 @@ class Reporter:
     # ------------------------------------------------------------------
 
     def _get_fix_suggestions(self, report: Report) -> dict[str, str]:
-        """Call Claude once per failed test to get a root cause and fix."""
+        """Call the LLM once per failed test to get a root cause and fix."""
         suggestions: dict[str, str] = {}
+        if self.client is None:
+            return suggestions
         failures = [r for r in report.results if r.status in (TestStatus.FAILED, TestStatus.ERROR)]
 
         if not failures:
@@ -176,52 +178,41 @@ class Reporter:
                 continue
 
             try:
-                msg = self.client.messages.create(
-                    model=self.model,
-                    max_tokens=1024,
+                text = self.client.complete(
                     system=ANALYZE_FAILURE_SYSTEM,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": ANALYZE_FAILURE_PROMPT.format(
-                                test_code=test_code or "(source not available)",
-                                error_output=error_output or "(no error output captured)",
-                            ),
-                        }
-                    ],
-                )
-                suggestions[result.test_case_id] = msg.content[0].text.strip()
+                    user=ANALYZE_FAILURE_PROMPT.format(
+                        test_code=test_code or "(source not available)",
+                        error_output=error_output or "(no error output captured)",
+                    ),
+                    max_tokens=1024,
+                ).strip()
+                suggestions[result.test_case_id] = text
             except Exception:
                 pass  # best-effort; skip silently
 
         return suggestions
 
     def _get_ai_analysis(self, report: Report) -> str:
-        """Call Claude for an overall quality verdict."""
+        """Call the LLM for an overall quality verdict."""
+        if self.client is None:
+            return ""
         flows_summary = _build_flows_summary(report)
         failures_summary = _build_failures_summary(report)
 
         try:
-            msg = self.client.messages.create(
-                model=self.model,
-                max_tokens=1024,
+            return self.client.complete(
                 system=REPORTER_ANALYSIS_SYSTEM,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": REPORTER_ANALYSIS_PROMPT.format(
-                            url=report.url,
-                            total=report.total,
-                            passed=report.passed,
-                            pass_rate=f"{report.pass_rate:.1f}",
-                            failed=report.failed,
-                            flows_summary=flows_summary,
-                            failures_summary=failures_summary,
-                        ),
-                    }
-                ],
-            )
-            return msg.content[0].text.strip()
+                user=REPORTER_ANALYSIS_PROMPT.format(
+                    url=report.url,
+                    total=report.total,
+                    passed=report.passed,
+                    pass_rate=f"{report.pass_rate:.1f}",
+                    failed=report.failed,
+                    flows_summary=flows_summary,
+                    failures_summary=failures_summary,
+                ),
+                max_tokens=1024,
+            ).strip()
         except Exception:
             return ""
 
@@ -229,6 +220,7 @@ class Reporter:
 # ---------------------------------------------------------------------------
 # Markdown rendering
 # ---------------------------------------------------------------------------
+
 
 def _render_markdown(
     report: Report,
@@ -261,7 +253,9 @@ def _render_markdown(
     if report.flows:
         lines += [f"## Flows Identified ({len(report.flows)})", ""]
         for flow in report.flows:
-            priority = flow.priority.value if hasattr(flow.priority, "value") else str(flow.priority)
+            priority = (
+                flow.priority.value if hasattr(flow.priority, "value") else str(flow.priority)
+            )
             lines.append(f"- **{flow.name}** `{priority}` — {flow.description}")
         lines.append("")
 
@@ -330,7 +324,7 @@ def _render_markdown(
     # --- Footer ---
     lines += [
         "---",
-        f"*Generated by qa-agent on {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}*",
+        f"*Generated by qa-agent on {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}*",
         "",
     ]
 
@@ -340,6 +334,7 @@ def _render_markdown(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _load_test_code(result: TestResult) -> str:
     """Read the generated test file source, or return empty string."""
@@ -370,7 +365,6 @@ def _build_flows_summary(report: Report) -> str:
     if not report.results:
         return "(no tests run)"
     lines = []
-    result_by_id = {r.test_case_id: r for r in report.results}
     # Match by test_case_name against flow names
     for r in report.results:
         icon = _STATUS_ICON.get(r.status, r.status.value)
@@ -396,9 +390,11 @@ def _open_report(path: Path) -> None:
             os.startfile(str(path))
         elif sys.platform == "darwin":
             import subprocess
+
             subprocess.run(["open", str(path)], check=False)
         else:
             import subprocess
+
             subprocess.run(["xdg-open", str(path)], check=False)
     except Exception:
         pass  # best-effort

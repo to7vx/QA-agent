@@ -109,6 +109,14 @@ screenshots/
 # For now, ignore all generated tests. When ready to showcase, explicitly
 # `git add generated_tests/sample_run.py` and remove from this pattern.
 generated_tests/*.py
+generated_tests/manifest.json
+
+# Local SQLite dev databases (created at runtime by the API/store)
+*.db
+!Thumbs.db
+
+# Coverage XML (CI artifact)
+coverage.xml
 
 # Reports — ignore bulk output, allow one curated example
 reports/*.md

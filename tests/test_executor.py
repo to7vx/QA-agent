@@ -5,10 +5,10 @@ from __future__ import annotations
 from qa_agent.executor import _parse_failure, _parse_status, _render_table
 from qa_agent.models import TestCase, TestResult, TestStatus
 
-
 # ---------------------------------------------------------------------------
 # _parse_status
 # ---------------------------------------------------------------------------
+
 
 def test_parse_status_passed() -> None:
     assert _parse_status(0) == TestStatus.PASSED
@@ -61,7 +61,9 @@ def test_parse_failure_playwright_timeout() -> None:
     msg, selector = _parse_failure(_PLAYWRIGHT_TIMEOUT_OUTPUT)
     assert msg is not None
     assert "Timeout" in msg or "TimeoutError" in msg
-    assert selector == "locator('#submit-btn')"
+    # _normalise_selector rewrites single → double quotes so the healer can
+    # match the selector verbatim against the (double-quoted) Python source.
+    assert selector == 'locator("#submit-btn")'
 
 
 def test_parse_failure_assertion_error() -> None:
@@ -94,6 +96,7 @@ def test_parse_failure_truncates_long_message() -> None:
 # _render_table
 # ---------------------------------------------------------------------------
 
+
 def _make_tc(name: str) -> TestCase:
     return TestCase(id=f"t_{name}", flow_id="f1", name=name, description="")
 
@@ -102,8 +105,10 @@ def test_render_table_all_pending() -> None:
     tcs = [_make_tc("Login"), _make_tc("Search")]
     table = _render_table(tcs, [None, None])
     # Just verify it renders without error — Rich tables don't expose rows easily
-    from rich.console import Console
     from io import StringIO
+
+    from rich.console import Console
+
     buf = StringIO()
     Console(file=buf, width=120).print(table)
     output = buf.getvalue()
@@ -114,12 +119,21 @@ def test_render_table_all_pending() -> None:
 def test_render_table_mixed_results() -> None:
     tcs = [_make_tc("A"), _make_tc("B"), _make_tc("C")]
     slots = [
-        TestResult(test_case_id="t_A", test_case_name="A", status=TestStatus.PASSED, duration_ms=1234),
-        TestResult(test_case_id="t_B", test_case_name="B", status=TestStatus.FAILED, error_message="selector not found"),
+        TestResult(
+            test_case_id="t_A", test_case_name="A", status=TestStatus.PASSED, duration_ms=1234
+        ),
+        TestResult(
+            test_case_id="t_B",
+            test_case_name="B",
+            status=TestStatus.FAILED,
+            error_message="selector not found",
+        ),
         None,
     ]
-    from rich.console import Console
     from io import StringIO
+
+    from rich.console import Console
+
     buf = StringIO()
     Console(file=buf, width=120).print(_render_table(tcs, slots))
     output = buf.getvalue()

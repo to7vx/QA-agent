@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 import re
 import sys
 import time
 from pathlib import Path
 
-import anthropic
-
 from .config import Settings
+from .llm import LLMClient
 from .models import HealingAttempt, TestCase, TestResult, TestStatus
 from .prompts import HEALER_PROMPT, HEALER_SYSTEM
+
+log = logging.getLogger("qa_agent.healer")
 
 _CONFIDENCE_THRESHOLD = 0.7
 
@@ -24,12 +27,14 @@ class Healer:
     def __init__(
         self,
         settings: Settings,
-        client: anthropic.Anthropic,
-        model: str,
+        client: LLMClient,
     ) -> None:
         self.settings = settings
         self.client = client
-        self.model = model
+        # Authenticated-flow support: DOM re-capture and test re-runs reuse the
+        # run's login session when these are set.
+        self.storage_state: dict | None = None
+        self.storage_state_path: str | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -58,7 +63,9 @@ class Healer:
 
         url = _extract_url(test_code)
         if not url:
-            return result, _refused_attempt(tc, failing_selector, "Could not extract page URL from test")
+            return result, _refused_attempt(
+                tc, failing_selector, "Could not extract page URL from test"
+            )
 
         attempt = HealingAttempt(
             test_case_id=tc.id,
@@ -69,15 +76,17 @@ class Healer:
 
         # Step 1 — re-capture live DOM
         try:
-            dom, ax_tree = _capture_dom(url, headless=self.settings.headless)
+            dom, ax_tree = _capture_dom(
+                url, headless=self.settings.headless, storage_state=self.storage_state
+            )
         except Exception as exc:
             attempt.reasoning = f"DOM capture failed: {exc}"
             return result, attempt
 
-        # Step 2 — ask Claude for a replacement selector
-        heal_data = self._ask_claude(test_code, failing_selector, result, dom, ax_tree)
+        # Step 2 — ask the LLM for a replacement selector
+        heal_data = self._ask_llm(test_code, failing_selector, result, dom, ax_tree)
         if heal_data is None:
-            attempt.reasoning = "Claude did not return parseable JSON"
+            attempt.reasoning = "LLM did not return parseable JSON"
             return result, attempt
 
         attempt.confidence = heal_data.get("confidence", 0.0)
@@ -111,7 +120,7 @@ class Healer:
         test_path.write_text(healed_code, encoding="utf-8")
 
         try:
-            new_result = _rerun_test(tc, self.settings)
+            new_result = _rerun_test(tc, self.settings, self.storage_state_path)
         except Exception as exc:
             test_path.write_text(original_code, encoding="utf-8")
             attempt.outcome = "error"
@@ -134,7 +143,7 @@ class Healer:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _ask_claude(
+    def _ask_llm(
         self,
         test_code: str,
         failing_selector: str,
@@ -143,35 +152,37 @@ class Healer:
         ax_tree: str,
     ) -> dict | None:
         try:
-            msg = self.client.messages.create(
-                model=self.model,
-                max_tokens=512,
+            raw = self.client.complete(
                 system=HEALER_SYSTEM,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": HEALER_PROMPT.format(
-                            test_code=test_code[:4_000],
-                            failing_selector=failing_selector,
-                            error_message=(result.error_message or "")[:500],
-                            dom=dom[:8_000],
-                            ax_tree=ax_tree[:3_000],
-                        ),
-                    }
-                ],
-            )
-            raw = msg.content[0].text.strip()
-            # Strip markdown fences if Claude added them despite instructions
+                user=HEALER_PROMPT.format(
+                    test_code=test_code[:4_000],
+                    failing_selector=failing_selector,
+                    error_message=(result.error_message or "")[:500],
+                    dom=dom[:8_000],
+                    ax_tree=ax_tree[:3_000],
+                ),
+                max_tokens=512,
+            ).strip()
+            # Strip markdown fences if the model added them despite instructions
             raw = re.sub(r"^```(?:json)?\s*", "", raw)
             raw = re.sub(r"\s*```$", "", raw.strip())
-            return json.loads(raw)
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                from json_repair import repair_json
+
+                return repair_json(raw, return_objects=True) or None
         except Exception:
+            # Don't swallow silently — a rate-limit/auth/network failure here is
+            # otherwise misreported downstream as "LLM returned no JSON".
+            log.warning("Healer LLM call failed", exc_info=True)
             return None
 
 
 # ---------------------------------------------------------------------------
 # Healing stats persistence
 # ---------------------------------------------------------------------------
+
 
 def append_healing_stat(report_dir: Path, attempt: HealingAttempt, url: str) -> None:
     """Append one healing attempt to the cumulative healing_stats.json."""
@@ -183,16 +194,18 @@ def append_healing_stat(report_dir: Path, attempt: HealingAttempt, url: str) -> 
         except Exception:
             existing = []
 
-    existing.append({
-        "timestamp": attempt.timestamp.isoformat(),
-        "url": url,
-        "test_case_name": attempt.test_case_name,
-        "original_selector": attempt.original_selector,
-        "new_selector": attempt.new_selector,
-        "confidence": attempt.confidence,
-        "outcome": attempt.outcome,
-        "reasoning": attempt.reasoning,
-    })
+    existing.append(
+        {
+            "timestamp": attempt.timestamp.isoformat(),
+            "url": url,
+            "test_case_name": attempt.test_case_name,
+            "original_selector": attempt.original_selector,
+            "new_selector": attempt.new_selector,
+            "confidence": attempt.confidence,
+            "outcome": attempt.outcome,
+            "reasoning": attempt.reasoning,
+        }
+    )
 
     report_dir.mkdir(parents=True, exist_ok=True)
     stats_path.write_text(json.dumps(existing, indent=2, default=str), encoding="utf-8")
@@ -202,19 +215,21 @@ def append_healing_stat(report_dir: Path, attempt: HealingAttempt, url: str) -> 
 # DOM capture (sync Playwright — safe to call from sync context)
 # ---------------------------------------------------------------------------
 
-def _capture_dom(url: str, *, headless: bool = True) -> tuple[str, str]:
+
+def _capture_dom(
+    url: str, *, headless: bool = True, storage_state: dict | None = None
+) -> tuple[str, str]:
     """Return (html, ax_tree_json) for the given URL using the sync Playwright API."""
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
         try:
-            page = browser.new_page()
+            context = browser.new_context(storage_state=storage_state or None)
+            page = context.new_page()
             page.goto(url, wait_until="domcontentloaded")
-            try:
+            with contextlib.suppress(Exception):
                 page.wait_for_load_state("networkidle", timeout=5_000)
-            except Exception:
-                pass
             html = page.content()
             ax = page.accessibility.snapshot() or {}
             ax_tree = json.dumps(ax, indent=2)
@@ -228,8 +243,13 @@ def _capture_dom(url: str, *, headless: bool = True) -> tuple[str, str]:
 # Test re-execution
 # ---------------------------------------------------------------------------
 
-def _rerun_test(tc: TestCase, settings: Settings) -> TestResult:
+
+def _rerun_test(
+    tc: TestCase, settings: Settings, storage_state_path: str | None = None
+) -> TestResult:
     import subprocess
+
+    from .auth import subprocess_env
     from .executor import _parse_failure, _parse_status
 
     screenshot_dir = settings.report_dir / "screenshots"
@@ -237,25 +257,32 @@ def _rerun_test(tc: TestCase, settings: Settings) -> TestResult:
     existing_shots = set(screenshot_dir.rglob("*.png"))
 
     cmd = [
-        sys.executable, "-m", "pytest",
+        sys.executable,
+        "-m",
+        "pytest",
         str(tc.file_path),
         "-v",
         "--tb=long",
         "--no-header",
-        "-p", "no:cacheprovider",
+        "-p",
+        "no:cacheprovider",
         "--screenshot=only-on-failure",
         f"--output={screenshot_dir}",
     ]
 
     t0 = time.monotonic()
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=subprocess_env(storage_state_path),
+    )
     duration_ms = (time.monotonic() - t0) * 1_000
 
     status = _parse_status(proc.returncode)
     combined = proc.stdout + proc.stderr
-    error_msg, selector = (
-        _parse_failure(combined) if status == TestStatus.FAILED else (None, None)
-    )
+    error_msg, selector = _parse_failure(combined) if status == TestStatus.FAILED else (None, None)
 
     new_shots = set(screenshot_dir.rglob("*.png")) - existing_shots
     screenshot = next(iter(sorted(new_shots)), None)
@@ -281,6 +308,7 @@ def _rerun_test(tc: TestCase, settings: Settings) -> TestResult:
 # ---------------------------------------------------------------------------
 # Source manipulation utilities
 # ---------------------------------------------------------------------------
+
 
 def _read_test_file(tc: TestCase) -> str:
     if not tc.file_path:
@@ -311,10 +339,7 @@ def _apply_selector(test_code: str, failing_selector: str, new_selector: str) ->
         return test_code.replace(old, new_selector)
 
     # Try with swapped quote style as a fallback
-    if '"' in old:
-        alt = old.replace('"', "'")
-    else:
-        alt = old.replace("'", '"')
+    alt = old.replace('"', "'") if '"' in old else old.replace("'", '"')
     if alt in test_code:
         return test_code.replace(alt, new_selector)
 
