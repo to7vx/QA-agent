@@ -2,9 +2,11 @@
 
 > Autonomous browser test authoring: give it a URL, get a runnable Playwright suite in under 60 seconds.
 
+[![CI](https://github.com/to7vx/QA-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/to7vx/QA-agent/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://python.org)
+[![Ruff](https://img.shields.io/badge/lint-ruff-261230.svg)](https://github.com/astral-sh/ruff)
+[![Checked with mypy](https://img.shields.io/badge/types-mypy-blue.svg)](https://mypy-lang.org)
 [![Model](https://img.shields.io/badge/claude-sonnet--4--6-blueviolet.svg)](https://anthropic.com)
-[![Status](https://img.shields.io/badge/status-v1%20complete-green.svg)]()
 
 <!-- Demo GIF: drop docs/assets/demo.gif here once captured -->
 <!-- ![Pipeline demo](docs/assets/demo.gif) -->
