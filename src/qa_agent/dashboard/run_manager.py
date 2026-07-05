@@ -13,13 +13,16 @@ import threading
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..config import Settings, get_settings
 from ..events import RunEvent
 from ..keystore import KeyStore
+from ..models import TestCase
 from ..providers import LLMProvider, ProviderError, create_provider
+from ..store import Store
 
 
 class RunBusyError(Exception):
@@ -27,11 +30,15 @@ class RunBusyError(Exception):
 
 
 class RunParams(BaseModel):
-    url: str
+    url: str = ""
     provider: str = "anthropic"
     model: str = ""
     headed: bool = False
     heal: bool = True
+    mode: Literal["full", "execute"] = "full"
+    # execute mode: [{id, name, file_path, description}]
+    tests: list[dict] = Field(default_factory=list)
+    url_label: str = ""
 
 
 @dataclass
@@ -58,6 +65,11 @@ class RunManager:
         self._lock = threading.Lock()
         self._runs: dict[str, RunRecord] = {}
         self._active_id: str | None = None
+        self.store = Store(self.settings.report_dir / "qa.db")
+        try:
+            self.store.import_legacy(self.settings.report_dir)
+        except Exception:
+            pass  # legacy import is best-effort
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -71,6 +83,9 @@ class RunManager:
                 "Add one on the Settings page first."
             )
         provider = create_provider(params.provider, params.model, api_key)
+
+        if params.mode == "execute" and not params.tests:
+            raise ValueError("Execute mode needs at least one test.")
 
         with self._lock:
             if self._active_id is not None:
@@ -88,6 +103,64 @@ class RunManager:
         record.thread.start()
         return run_id
 
+    def run_single_test(self, tc_id: str) -> str:
+        """Execute one library test as a fresh run."""
+        tc = self.store.get_test_case(tc_id)
+        if tc is None:
+            raise ValueError("Test case not found.")
+        if not Path(tc["file_path"]).exists():
+            raise ValueError(f"Test file is missing on disk: {tc['file_path']}")
+        defaults = self.keystore.get_defaults()
+        return self.start(RunParams(
+            provider=defaults["provider"],
+            model=defaults["model"],
+            mode="execute",
+            tests=[{
+                "id": tc["id"],
+                "name": tc["name"],
+                "file_path": tc["file_path"],
+                "description": tc.get("scenario", ""),
+            }],
+            url_label=tc["url"] or tc["name"],
+        ))
+
+    def rerun_failed(self, run_id: str) -> str:
+        """Re-execute only the failed/error tests of a finished run."""
+        payload = self.get_report(run_id)
+        if payload is None or not payload.get("report"):
+            raise ValueError("Run not found or has no report yet.")
+        report = payload["report"]
+        failed_ids = {
+            r["test_case_id"]
+            for r in report.get("results", [])
+            if r.get("status") in ("failed", "error")
+        }
+        if not failed_ids:
+            raise ValueError("This run has no failed tests to re-run.")
+        cases = [
+            tc for tc in report.get("test_cases", [])
+            if tc.get("id") in failed_ids and tc.get("file_path")
+            and Path(tc["file_path"]).exists()
+        ]
+        if not cases:
+            raise ValueError(
+                "The failed tests' files are no longer on disk — "
+                "they were likely overwritten by a newer run."
+            )
+        meta = payload.get("meta", {})
+        return self.start(RunParams(
+            provider=meta.get("provider", "anthropic"),
+            model=meta.get("model", ""),
+            mode="execute",
+            tests=[{
+                "id": tc["id"],
+                "name": tc.get("name", tc["id"]),
+                "file_path": tc["file_path"],
+                "description": tc.get("description", ""),
+            } for tc in cases],
+            url_label=report.get("url", ""),
+        ))
+
     def cancel(self, run_id: str) -> bool:
         record = self._runs.get(run_id)
         if record is None or record.status != "running":
@@ -99,6 +172,11 @@ class RunManager:
         record = self._runs.get(run_id)
         if record is not None:
             return record.status
+        try:
+            if self.store.get_run(run_id) is not None:
+                return "finished"
+        except Exception:
+            pass
         if (self.settings.report_dir / run_id / "report.json").exists():
             return "finished"
         return None
@@ -146,37 +224,11 @@ class RunManager:
     # ------------------------------------------------------------------
 
     def history(self) -> list[dict]:
-        entries: list[dict] = []
-        report_dir = Path(self.settings.report_dir)
-        if not report_dir.exists():
-            return entries
-        for report_file in report_dir.glob("*/report.json"):
-            try:
-                payload = json.loads(report_file.read_text(encoding="utf-8"))
-                report = payload["report"]
-                meta = payload.get("meta", {})
-                results = report.get("results", [])
-                passed = sum(1 for r in results if r.get("status") == "passed")
-                failed = sum(1 for r in results if r.get("status") in ("failed", "error"))
-                entries.append({
-                    "run_id": meta.get("run_id", report_file.parent.name),
-                    "url": report.get("url", ""),
-                    "started_at": report.get("started_at"),
-                    "finished_at": report.get("finished_at"),
-                    "provider": meta.get("provider", ""),
-                    "model": meta.get("model", ""),
-                    "cancelled": meta.get("cancelled", False),
-                    "total": len(results),
-                    "passed": passed,
-                    "failed": failed,
-                    "healed": sum(1 for r in results if r.get("healed")),
-                    "pass_rate": (passed / len(results) * 100) if results else 0.0,
-                    "status": self.status(meta.get("run_id", report_file.parent.name)),
-                })
-            except Exception:
-                continue  # skip malformed/legacy folders — never crash listing
-        entries.sort(key=lambda e: e.get("started_at") or "", reverse=True)
-        # include the active run even before its report.json exists
+        try:
+            entries = self.store.list_runs()
+        except Exception:
+            entries = []
+        # include the active run even before it is persisted
         active = self.active_run()
         if active and not any(e["run_id"] == active["run_id"] for e in entries):
             entries.insert(0, active)
@@ -190,7 +242,7 @@ class RunManager:
             return None
         return {
             "run_id": record.run_id,
-            "url": record.params.url,
+            "url": record.params.url or record.params.url_label,
             "provider": record.provider.name,
             "model": record.provider.model,
             "status": "running",
@@ -201,8 +253,19 @@ class RunManager:
         }
 
     def get_report(self, run_id: str) -> dict | None:
-        path = self.settings.report_dir / run_id / "report.json"
-        if not path.exists():
+        payload = None
+        try:
+            payload = self.store.get_run(run_id)
+        except Exception:
+            payload = None
+        if payload is None:
+            path = self.settings.report_dir / run_id / "report.json"
+            if path.exists():
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    payload = None
+        if payload is None:
             record = self._runs.get(run_id)
             if record is not None:
                 return {
@@ -215,10 +278,6 @@ class RunManager:
                     "report": None,
                     "status": record.status,
                 }
-            return None
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
             return None
         payload["status"] = self.status(run_id)
         return payload
@@ -240,14 +299,35 @@ class RunManager:
             settings.model = record.provider.model
             settings.headless = not record.params.headed
             agent = self._agent_factory(settings, record.provider, emit)
-            asyncio.run(
-                agent.run(
-                    record.params.url,
-                    heal=record.params.heal,
-                    cancel=record.cancel,
-                    run_id=record.run_id,
+            if record.params.mode == "execute":
+                test_cases = [
+                    TestCase(
+                        id=t["id"],
+                        flow_id="",
+                        name=t.get("name", t["id"]),
+                        description=t.get("description", ""),
+                        file_path=t["file_path"],
+                    )
+                    for t in record.params.tests
+                ]
+                asyncio.run(
+                    agent.run_tests(
+                        test_cases,
+                        heal=record.params.heal,
+                        cancel=record.cancel,
+                        run_id=record.run_id,
+                        url_label=record.params.url_label,
+                    )
                 )
-            )
+            else:
+                asyncio.run(
+                    agent.run(
+                        record.params.url,
+                        heal=record.params.heal,
+                        cancel=record.cancel,
+                        run_id=record.run_id,
+                    )
+                )
             record.status = "cancelled" if record.cancel.is_set() else "finished"
         except Exception as exc:  # surfaced to the UI as run_error
             record.status = "error"
@@ -255,3 +335,15 @@ class RunManager:
                 record,
                 RunEvent(type="run_error", data={"message": str(exc)}),
             )
+        finally:
+            self._persist_to_store(record)
+
+    def _persist_to_store(self, record: RunRecord) -> None:
+        """Copy the freshly written report.json into the DB — best-effort."""
+        path = self.settings.report_dir / record.run_id / "report.json"
+        if not path.exists():
+            return
+        try:
+            self.store.save_run(json.loads(path.read_text(encoding="utf-8")))
+        except Exception:
+            pass  # storage must never break a run
