@@ -1,29 +1,44 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, KeyRound, Loader2, Trash2, XCircle } from "lucide-react";
+import {
+  CheckCircle2,
+  Database,
+  KeyRound,
+  Loader2,
+  Trash2,
+  XCircle,
+} from "lucide-react";
 import {
   deleteKey,
+  getInsights,
   getProviders,
   getSettings,
   putDefaults,
   putKey,
   testKey,
 } from "../api";
-import type { ProviderInfo } from "../types";
+import type { InsightsData, ProviderInfo } from "../types";
+import ModelSelect from "../components/ModelSelect";
 
 export default function SettingsPage() {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [defaults, setDefaults] = useState({ provider: "anthropic", model: "" });
+  const [insights, setInsights] = useState<InsightsData | null>(null);
+  const [defaultsSaved, setDefaultsSaved] = useState(false);
 
   const refresh = () => {
     getProviders().then(setProviders).catch(() => {});
     getSettings().then((s) => setDefaults(s.defaults)).catch(() => {});
+    getInsights().then(setInsights).catch(() => {});
   };
   useEffect(refresh, []);
 
   const saveDefaults = async (provider: string, model: string) => {
     setDefaults({ provider, model });
+    setDefaultsSaved(false);
     try {
       await putDefaults(provider, model);
+      setDefaultsSaved(true);
+      setTimeout(() => setDefaultsSaved(false), 2000);
     } catch {
       /* transient; next load re-syncs */
     }
@@ -34,18 +49,25 @@ export default function SettingsPage() {
   return (
     <div className="mx-auto max-w-3xl px-8 py-10">
       <h1 className="font-display text-2xl font-bold tracking-tight">Settings</h1>
-      <p className="mt-1 text-sm text-mut">
-        Keys are stored on this machine only, in{" "}
-        <code className="font-mono text-xs">~/.qa-agent/config.json</code>. They never
-        leave it except to call the provider you choose.
-      </p>
 
-      <section className="mt-8 space-y-4">
-        {providers.map((p) => (
-          <KeyCard key={p.id} provider={p} onChange={refresh} />
-        ))}
+      {/* 1 — Providers */}
+      <section className="mt-8">
+        <h2 className="font-display text-xs font-medium uppercase tracking-widest text-dim">
+          Providers
+        </h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-mut">
+          Add a key for each AI you want to test with. Keys are stored on this
+          machine only (<code className="font-mono">~/.qa-agent/config.json</code>) and
+          never leave it except to call the provider you choose.
+        </p>
+        <div className="mt-3 space-y-3">
+          {providers.map((p) => (
+            <KeyCard key={p.id} provider={p} onChange={refresh} />
+          ))}
+        </div>
       </section>
 
+      {/* 2 — Defaults */}
       <section className="mt-10">
         <h2 className="font-display text-xs font-medium uppercase tracking-widest text-dim">
           Defaults for new runs
@@ -57,6 +79,7 @@ export default function SettingsPage() {
               const p = providers.find((x) => x.id === e.target.value);
               saveDefaults(e.target.value, p?.default_model ?? "");
             }}
+            aria-label="Default provider"
             className="rounded-md border border-edge bg-raise px-2.5 py-1.5 text-xs text-fg focus:border-amber/60 focus:outline-none"
           >
             {providers.map((p) => (
@@ -65,16 +88,41 @@ export default function SettingsPage() {
               </option>
             ))}
           </select>
-          <input
+          <ModelSelect
+            provider={defaultProvider}
             value={defaults.model}
-            onChange={(e) => saveDefaults(defaults.provider, e.target.value)}
-            list="default-model-suggestions"
-            spellCheck={false}
-            className="w-56 rounded-md border border-edge bg-raise px-2.5 py-1.5 font-mono text-xs text-fg focus:border-amber/60 focus:outline-none"
+            onChange={(m) => saveDefaults(defaults.provider, m)}
           />
-          <datalist id="default-model-suggestions">
-            {defaultProvider?.models.map((m) => <option key={m} value={m} />)}
-          </datalist>
+          {defaultsSaved && (
+            <span className="flex items-center gap-1 text-[11px] text-pass">
+              <CheckCircle2 size={12} /> saved
+            </span>
+          )}
+        </div>
+      </section>
+
+      {/* 3 — Data */}
+      <section className="mt-10">
+        <h2 className="font-display text-xs font-medium uppercase tracking-widest text-dim">
+          Data
+        </h2>
+        <div className="mt-3 flex items-start gap-3 rounded-lg border border-edge bg-panel px-4 py-3.5">
+          <Database size={15} className="mt-0.5 shrink-0 text-amber" />
+          <div className="text-xs leading-relaxed text-mut">
+            Runs and your test library live in a local SQLite database at{" "}
+            <code className="font-mono text-fg">reports/qa.db</code>
+            {insights && (
+              <>
+                {" — currently "}
+                <span className="text-fg">{insights.kpis.runs}</span> runs and{" "}
+                <span className="text-fg">{insights.kpis.tests_run}</span> executed
+                tests
+              </>
+            )}
+            . Markdown reports and screenshots sit alongside it in{" "}
+            <code className="font-mono text-fg">reports/</code>. Nothing is sent to
+            any cloud.
+          </div>
         </div>
       </section>
     </div>

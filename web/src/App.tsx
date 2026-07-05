@@ -1,12 +1,22 @@
 import { NavLink, Route, Routes } from "react-router-dom";
-import { History, Play, Settings as SettingsIcon } from "lucide-react";
+import {
+  Beaker,
+  ChartNoAxesColumn,
+  History,
+  Play,
+  Settings as SettingsIcon,
+} from "lucide-react";
 import NewRun from "./pages/NewRun";
 import RunView from "./pages/RunView";
 import HistoryPage from "./pages/History";
 import SettingsPage from "./pages/Settings";
+import TestLab from "./pages/TestLab";
+import InsightsPage from "./pages/Insights";
 
 const navItems = [
   { to: "/", label: "New run", icon: Play },
+  { to: "/lab", label: "Test Lab", icon: Beaker },
+  { to: "/insights", label: "Insights", icon: ChartNoAxesColumn },
   { to: "/history", label: "History", icon: History },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];
@@ -52,6 +62,8 @@ export default function App() {
       <main className="min-w-0 flex-1">
         <Routes>
           <Route path="/" element={<NewRun />} />
+          <Route path="/lab" element={<TestLab />} />
+          <Route path="/insights" element={<InsightsPage />} />
           <Route path="/runs/:runId" element={<RunView />} />
           <Route path="/history" element={<HistoryPage />} />
           <Route path="/settings" element={<SettingsPage />} />

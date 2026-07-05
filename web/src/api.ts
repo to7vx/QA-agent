@@ -3,6 +3,8 @@ import type {
   AppSettings,
   Flow,
   HealingAttempt,
+  InsightsData,
+  LibraryTest,
   ProviderInfo,
   RunEvent,
   RunReport,
@@ -57,6 +59,23 @@ export const getRuns = () =>
 export const getRun = (runId: string) => api<RunReport>(`/api/runs/${runId}`);
 export const cancelRun = (runId: string) =>
   api(`/api/runs/${runId}/cancel`, { method: "POST" });
+export const rerunFailed = (runId: string) =>
+  api<{ run_id: string }>(`/api/runs/${runId}/rerun-failed`, { method: "POST" });
+export const getRunTestCode = (runId: string, testCaseId: string) =>
+  api<{ code: string; file_path: string }>(`/api/runs/${runId}/code/${testCaseId}`);
+export const getInsights = () => api<InsightsData>("/api/insights");
+export const getTests = () => api<{ tests: LibraryTest[] }>("/api/tests");
+export const getTest = (id: string) => api<LibraryTest>(`/api/tests/${id}`);
+export const deleteTest = (id: string) =>
+  api(`/api/tests/${id}`, { method: "DELETE" });
+export const runTest = (id: string) =>
+  api<{ run_id: string }>(`/api/tests/${id}/run`, { method: "POST" });
+export const composeTest = (body: {
+  url: string;
+  scenario: string;
+  provider: string;
+  model: string;
+}) => api<LibraryTest>("/api/compose", { method: "POST", body: JSON.stringify(body) });
 
 // ---------------------------------------------------------------------------
 // Live run state, folded from the SSE event stream

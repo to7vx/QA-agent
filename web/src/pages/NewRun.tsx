@@ -1,8 +1,15 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowRight, KeyRound, Loader2 } from "lucide-react";
-import { getProviders, getRuns, getSettings, startRun } from "../api";
-import type { ProviderInfo, RunSummary } from "../types";
+import {
+  ArrowRight,
+  Beaker,
+  ChartNoAxesColumn,
+  KeyRound,
+  Loader2,
+} from "lucide-react";
+import { getInsights, getProviders, getRuns, getSettings, startRun } from "../api";
+import type { InsightsData, ProviderInfo, RunSummary } from "../types";
+import ModelSelect from "../components/ModelSelect";
 import PassRing from "../components/PassRing";
 import StatusBadge from "../components/StatusBadge";
 
@@ -11,6 +18,7 @@ export default function NewRun() {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [recent, setRecent] = useState<RunSummary[]>([]);
   const [active, setActive] = useState<RunSummary | null>(null);
+  const [insights, setInsights] = useState<InsightsData | null>(null);
 
   const [url, setUrl] = useState("");
   const [providerId, setProviderId] = useState("anthropic");
@@ -34,6 +42,7 @@ export default function NewRun() {
         setActive(r.active);
       })
       .catch(() => {});
+    getInsights().then(setInsights).catch(() => {});
   }, []);
 
   const selected = providers.find((p) => p.id === providerId);
@@ -149,17 +158,7 @@ export default function NewRun() {
             ))}
           </div>
 
-          <input
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            list="model-suggestions"
-            placeholder={selected?.default_model ?? "model"}
-            spellCheck={false}
-            className="w-52 rounded-md border border-edge bg-panel px-2.5 py-1.5 font-mono text-xs text-fg placeholder:text-dim focus:border-amber/60 focus:outline-none"
-          />
-          <datalist id="model-suggestions">
-            {selected?.models.map((m) => <option key={m} value={m} />)}
-          </datalist>
+          <ModelSelect provider={selected} value={model} onChange={setModel} />
 
           <label className="flex cursor-pointer items-center gap-2 text-xs text-mut">
             <input
@@ -181,6 +180,59 @@ export default function NewRun() {
           </label>
         </div>
       </form>
+
+      {/* Quick stats + feature cards */}
+      {insights && insights.kpis.runs > 0 && (
+        <div className="mt-10 flex flex-wrap items-center gap-x-8 gap-y-2 rounded-lg border border-edge bg-panel px-5 py-3.5 font-mono text-[11px] text-mut">
+          <span>
+            <span className="text-fg">{insights.kpis.runs}</span> runs
+          </span>
+          <span>
+            <span className="text-fg">{insights.kpis.tests_run}</span> tests executed
+          </span>
+          <span>
+            <span className={insights.kpis.pass_rate >= 80 ? "text-pass" : "text-amber"}>
+              {Math.round(insights.kpis.pass_rate)}%
+            </span>{" "}
+            avg pass rate
+          </span>
+          {insights.kpis.healed > 0 && (
+            <span>
+              <span className="text-heal">{insights.kpis.healed}</span> selectors healed
+            </span>
+          )}
+        </div>
+      )}
+
+      <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <Link
+          to="/lab"
+          className="group rounded-lg border border-edge bg-panel p-4 transition-colors hover:border-amber/40"
+        >
+          <div className="flex items-center gap-2.5">
+            <Beaker size={16} className="text-amber" />
+            <span className="font-display text-sm font-semibold">Test Lab</span>
+            <ArrowRight size={13} className="ml-auto text-dim transition-transform group-hover:translate-x-0.5" />
+          </div>
+          <p className="mt-1.5 text-xs leading-relaxed text-mut">
+            Write a test in plain English — the agent turns it into runnable
+            Playwright code and keeps it in your library.
+          </p>
+        </Link>
+        <Link
+          to="/insights"
+          className="group rounded-lg border border-edge bg-panel p-4 transition-colors hover:border-amber/40"
+        >
+          <div className="flex items-center gap-2.5">
+            <ChartNoAxesColumn size={16} className="text-heal" />
+            <span className="font-display text-sm font-semibold">Insights</span>
+            <ArrowRight size={13} className="ml-auto text-dim transition-transform group-hover:translate-x-0.5" />
+          </div>
+          <p className="mt-1.5 text-xs leading-relaxed text-mut">
+            Pass-rate trends, flakiest tests, and healing stats across every run.
+          </p>
+        </Link>
+      </div>
 
       {/* Recent runs */}
       {recent.length > 0 && (

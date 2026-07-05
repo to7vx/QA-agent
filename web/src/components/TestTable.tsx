@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Sparkles } from "lucide-react";
+import { ChevronDown, ChevronRight, Code2, Sparkles } from "lucide-react";
 import type { TestResult } from "../types";
 import StatusBadge from "./StatusBadge";
 
@@ -10,8 +10,24 @@ interface Row {
   running: boolean;
 }
 
-export default function TestTable({ rows }: { rows: Row[] }) {
+interface Props {
+  rows: Row[];
+  loadCode?: (testId: string) => Promise<string>;
+}
+
+export default function TestTable({ rows, loadCode }: Props) {
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [codeOpen, setCodeOpen] = useState<Record<string, boolean>>({});
+  const [code, setCode] = useState<Record<string, string>>({});
+
+  const toggleCode = async (id: string) => {
+    const next = !codeOpen[id];
+    setCodeOpen((c) => ({ ...c, [id]: next }));
+    if (next && loadCode && code[id] === undefined) {
+      const source = await loadCode(id).catch(() => "// source unavailable");
+      setCode((c) => ({ ...c, [id]: source }));
+    }
+  };
 
   if (rows.length === 0) {
     return (
@@ -51,8 +67,37 @@ export default function TestTable({ rows }: { rows: Row[] }) {
                   {(row.result.duration_ms / 1000).toFixed(1)}s
                 </span>
               )}
+              {loadCode && (
+                <span
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`View code for ${row.name}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleCode(row.id);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.stopPropagation();
+                      toggleCode(row.id);
+                    }
+                  }}
+                  className={`rounded border border-edge p-1 transition-colors hover:text-fg ${
+                    codeOpen[row.id] ? "text-amber" : "text-dim"
+                  }`}
+                >
+                  <Code2 size={12} />
+                </span>
+              )}
               <StatusBadge status={status} />
             </button>
+            {codeOpen[row.id] && (
+              <div className="bg-ink/50 px-11 pb-3">
+                <pre className="max-h-72 overflow-auto rounded border border-edge bg-ink p-3 font-mono text-[11px] leading-relaxed text-fg/90">
+                  {code[row.id] ?? "loading…"}
+                </pre>
+              </div>
+            )}
             {isOpen && row.result && (
               <div className="space-y-2 bg-ink/50 px-11 py-3">
                 {row.result.error_message && (

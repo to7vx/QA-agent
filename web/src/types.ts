@@ -86,3 +86,37 @@ export interface AppSettings {
   defaults: { provider: string; model: string };
   providers: Record<string, { configured: boolean; masked_key: string | null }>;
 }
+
+export interface LibraryTest {
+  id: string;
+  name: string;
+  description: string;
+  scenario: string;
+  url: string;
+  file_path: string;
+  origin: string;
+  provider: string;
+  model: string;
+  tags: string[];
+  created_at: string;
+  code?: string;
+}
+
+export interface InsightsData {
+  kpis: {
+    runs: number;
+    tests_run: number;
+    pass_rate: number;
+    healed: number;
+    sites: number;
+  };
+  trend: {
+    run_id: string;
+    url: string;
+    date: string | null;
+    pass_rate: number;
+    total: number;
+  }[];
+  flakiest: { name: string; fails: number; runs: number }[];
+  healing: { healed: number; refused: number; failed: number; error: number };
+}

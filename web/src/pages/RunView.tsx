@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import { FileText, OctagonX } from "lucide-react";
-import { cancelRun, getRun, useRunEvents } from "../api";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { FileText, OctagonX, RotateCcw } from "lucide-react";
+import { cancelRun, getRun, getRunTestCode, rerunFailed, useRunEvents } from "../api";
 import type { RunReport } from "../types";
 import FlowCard from "../components/FlowCard";
 import PassRing from "../components/PassRing";
@@ -16,9 +16,11 @@ export default function RunView() {
 }
 
 function LiveRun({ runId }: { runId: string }) {
+  const navigate = useNavigate();
   const run = useRunEvents(runId);
   const [report, setReport] = useState<RunReport | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  const [rerunError, setRerunError] = useState<string | null>(null);
 
   // Once finished, fetch the persisted report for extras (markdown path, etc.)
   useEffect(() => {
@@ -61,6 +63,18 @@ function LiveRun({ runId }: { runId: string }) {
     }
   };
 
+  const doRerunFailed = async () => {
+    setRerunError(null);
+    try {
+      const { run_id } = await rerunFailed(runId);
+      navigate(`/runs/${run_id}`);
+    } catch (err) {
+      setRerunError((err as Error).message);
+    }
+  };
+
+  const failedCount = run.summary?.failed ?? 0;
+
   return (
     <div className="mx-auto max-w-4xl px-8 py-10">
       {/* Header */}
@@ -76,6 +90,15 @@ function LiveRun({ runId }: { runId: string }) {
         </div>
         <div className="flex shrink-0 items-center gap-3">
           {run.summary && <PassRing passRate={run.summary.pass_rate} />}
+          {run.finished && !run.error && failedCount > 0 && (
+            <button
+              onClick={doRerunFailed}
+              className="flex items-center gap-1.5 rounded-md border border-amber/50 px-3 py-1.5 text-xs text-amber transition-colors hover:bg-amber/10"
+            >
+              <RotateCcw size={13} />
+              Re-run failed ({failedCount})
+            </button>
+          )}
           {status === "running" && (
             <button
               onClick={doCancel}
@@ -97,6 +120,11 @@ function LiveRun({ runId }: { runId: string }) {
       {run.error && (
         <div className="mt-4 rounded-lg border border-fail/30 bg-fail/5 px-4 py-3 text-sm text-fail">
           Run failed: {run.error}
+        </div>
+      )}
+      {rerunError && (
+        <div className="mt-4 rounded-lg border border-fail/30 bg-fail/5 px-4 py-3 text-xs text-fail">
+          {rerunError}
         </div>
       )}
       {run.cancelled && !run.error && (
@@ -124,7 +152,12 @@ function LiveRun({ runId }: { runId: string }) {
           Tests
         </h2>
         <div className="mt-3 overflow-hidden rounded-lg border border-edge bg-panel">
-          <TestTable rows={rows} />
+          <TestTable
+            rows={rows}
+            loadCode={(testId) =>
+              getRunTestCode(runId, testId).then((r) => r.code)
+            }
+          />
         </div>
       </section>
 
