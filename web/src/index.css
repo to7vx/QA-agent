@@ -1,0 +1,64 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #0e1018;
+  --color-panel: #161927;
+  --color-raise: #1d2133;
+  --color-edge: #262b3d;
+  --color-fg: #e8eaf2;
+  --color-mut: #8a90a6;
+  --color-dim: #565c73;
+  --color-amber: #ffb224;
+  --color-pass: #34d399;
+  --color-fail: #fb7185;
+  --color-heal: #a78bfa;
+
+  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", monospace;
+}
+
+html {
+  background: var(--color-ink);
+}
+
+body {
+  font-family: var(--font-body);
+  color: var(--color-fg);
+}
+
+/* The conveyor: dashed rail that flows while a run is live. */
+@keyframes convey {
+  to {
+    stroke-dashoffset: -14;
+  }
+}
+.conveyor {
+  stroke-dasharray: 7 7;
+  animation: convey 0.9s linear infinite;
+}
+
+@keyframes pulse-node {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(255 178 36 / 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 7px rgb(255 178 36 / 0);
+  }
+}
+.pulse-node {
+  animation: pulse-node 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conveyor,
+  .pulse-node {
+    animation: none;
+  }
+}
+
+*:focus-visible {
+  outline: 2px solid var(--color-amber);
+  outline-offset: 2px;
+}

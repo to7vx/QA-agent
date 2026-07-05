@@ -114,8 +114,15 @@ generated_tests/*.py
 reports/*.md
 reports/raw_results.json
 reports/healing_stats.json
+reports/*/
 # To commit a sample report: git add -f reports/sample_report.md
 !reports/sample_report.md
+
+# Dashboard frontend build tooling
+web/node_modules/
+web/tsconfig.tsbuildinfo
+# NOTE: src/qa_agent/dashboard/static/ (built bundle) IS committed on purpose,
+# so Python-only users never need Node.
 
 # =============================================================================
 # Editor / OS
