@@ -21,6 +21,16 @@ QA Agent takes a URL and runs a four-stage pipeline — explore, generate, execu
 
 v1 supports single-page flows on public sites. Authenticated flows and multi-page crawling are roadmap items.
 
+## Dashboard
+
+The primary way to use qa-agent is the local web dashboard:
+
+```bash
+uv run qa-agent        # starts http://127.0.0.1:8899 and opens your browser
+```
+
+Paste a URL, pick an LLM provider — **Claude, GPT, or Gemini** — and watch the pipeline run live: flows appear as the agent discovers them, tests tick pass/fail in real time, and self-healed selectors show their before/after with a confidence score. API keys are entered on the Settings page and stored locally in `~/.qa-agent/config.json` (plaintext, local-only — this is a single-user tool); environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`) work too. Run history and full reports live under `reports/`.
+
 ## Demo
 
 <!-- Pipeline terminal recording — replace placeholder when captured -->
