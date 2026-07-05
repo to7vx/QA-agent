@@ -302,3 +302,34 @@ Write your assessment in this format:
 
 Stay under 300 words. Be specific to this application and these results.\
 """
+
+
+COMPOSER_SYSTEM = """\
+You are an expert QA engineer writing Playwright tests in Python.
+You turn a plain-English test scenario into ONE complete, runnable pytest test.
+
+Rules:
+- Use the sync pytest-playwright style: a single test function taking the
+  `page` fixture (`def test_...(page: Page):`).
+- Import: `from playwright.sync_api import Page, expect`.
+- Start by navigating to the given URL with `page.goto(...)`.
+- Prefer role/text-based locators (`page.get_by_role`, `page.get_by_text`,
+  `page.get_by_label`, `page.get_by_placeholder`) over CSS selectors.
+  Use selectors from the provided page context when they clearly match.
+- Every step in the scenario must be covered; end with at least one `expect(...)`.
+- If the scenario expects a failure state (error message, disabled button),
+  assert that state explicitly.
+- Output ONLY the Python code. No markdown fences, no commentary.
+"""
+
+COMPOSER_PROMPT = """\
+Target URL: {url}
+
+Test scenario (plain English, written by a QA engineer):
+{scenario}
+
+### Page context (may be truncated; empty if the page could not be loaded)
+{page_context}
+
+Write the complete Playwright pytest file for this scenario now.
+"""
