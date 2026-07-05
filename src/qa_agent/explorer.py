@@ -192,54 +192,10 @@ class Explorer:
     async def _capture_snapshot(
         self, url: str, progress: Progress, task: object
     ) -> PageSnapshot:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=self.settings.headless)
-            try:
-                page = await browser.new_page()
-                page.set_default_timeout(30_000)
-
-                progress.update(task, description=f"Navigating to {url}...")
-                await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-
-                # networkidle is best-effort — polling pages (like HN) never reach it
-                try:
-                    await page.wait_for_load_state("networkidle", timeout=8_000)
-                except PlaywrightTimeout:
-                    pass
-
-                progress.update(task, description="Capturing title and HTML...")
-                title = await page.title()
-                html = await page.content()
-                resolved_url = page.url
-
-                progress.update(task, description="Taking screenshot...")
-                tmp_dir = Path(tempfile.mkdtemp(prefix="qa_agent_"))
-                screenshot_path = tmp_dir / "snapshot.png"
-                await page.screenshot(path=str(screenshot_path), full_page=False)
-
-                progress.update(task, description="Extracting interactive elements...")
-                try:
-                    elements: list[dict] = await page.evaluate(_COLLECT_ELEMENTS_JS)
-                except Exception:
-                    elements = []
-
-                progress.update(task, description="Capturing accessibility tree...")
-                try:
-                    ax_raw = await page.accessibility.snapshot()
-                    ax_tree_json = json.dumps(ax_raw or {}, indent=2)
-                except Exception:
-                    ax_tree_json = "{}"
-
-            finally:
-                await browser.close()
-
-        return PageSnapshot(
-            title=title,
-            url=resolved_url,
-            html=html,
-            screenshot_path=str(screenshot_path),
-            ax_tree_json=ax_tree_json,
-            interactive_elements=elements,
+        return await capture_snapshot(
+            url,
+            headless=self.settings.headless,
+            on_step=lambda msg: progress.update(task, description=msg),
         )
 
     def _identify_flows(self, snapshot: PageSnapshot) -> list[Flow]:
@@ -278,6 +234,68 @@ class Explorer:
                 console.print(f"[yellow]  Skipping malformed flow ({exc})[/yellow]")
 
         return flows
+
+
+# ---------------------------------------------------------------------------
+# Page capture (shared with the composer)
+# ---------------------------------------------------------------------------
+
+async def capture_snapshot(
+    url: str,
+    headless: bool = True,
+    on_step=None,
+) -> PageSnapshot:
+    """Load a page and capture everything the LLM needs as context."""
+    step = on_step or (lambda msg: None)
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=headless)
+        try:
+            page = await browser.new_page()
+            page.set_default_timeout(30_000)
+
+            step(f"Navigating to {url}...")
+            await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+
+            # networkidle is best-effort — polling pages (like HN) never reach it
+            try:
+                await page.wait_for_load_state("networkidle", timeout=8_000)
+            except PlaywrightTimeout:
+                pass
+
+            step("Capturing title and HTML...")
+            title = await page.title()
+            html = await page.content()
+            resolved_url = page.url
+
+            step("Taking screenshot...")
+            tmp_dir = Path(tempfile.mkdtemp(prefix="qa_agent_"))
+            screenshot_path = tmp_dir / "snapshot.png"
+            await page.screenshot(path=str(screenshot_path), full_page=False)
+
+            step("Extracting interactive elements...")
+            try:
+                elements: list[dict] = await page.evaluate(_COLLECT_ELEMENTS_JS)
+            except Exception:
+                elements = []
+
+            step("Capturing accessibility tree...")
+            try:
+                ax_raw = await page.accessibility.snapshot()
+                ax_tree_json = json.dumps(ax_raw or {}, indent=2)
+            except Exception:
+                ax_tree_json = "{}"
+
+        finally:
+            await browser.close()
+
+    return PageSnapshot(
+        title=title,
+        url=resolved_url,
+        html=html,
+        screenshot_path=str(screenshot_path),
+        ax_tree_json=ax_tree_json,
+        interactive_elements=elements,
+    )
 
 
 # ---------------------------------------------------------------------------

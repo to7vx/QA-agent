@@ -166,6 +166,64 @@ class QAAgent:
 
     # ------------------------------------------------------------------
 
+    async def run_tests(
+        self,
+        test_cases: list,
+        heal: bool = True,
+        cancel: threading.Event | None = None,
+        run_id: str | None = None,
+        url_label: str = "",
+    ) -> Report:
+        """Execute-only run: skip explore/generate, just run the given tests."""
+        settings = self.settings
+        settings.ensure_dirs()
+
+        report = Report(
+            id=run_id or uuid.uuid4().hex[:12],
+            url=url_label or (test_cases[0].name if test_cases else ""),
+            started_at=datetime.now(timezone.utc),
+        )
+        report.test_cases = test_cases
+
+        self._event(
+            "run_started",
+            run_id=report.id,
+            url=report.url,
+            provider=self.provider.name,
+            model=self.provider.model,
+            heal=heal,
+            mode="execute",
+            test_count=len(test_cases),
+        )
+
+        self._event("stage", stage="execute")
+        console.print(
+            f"\n[bold cyan]QA Agent[/bold cyan] executing {len(test_cases)} test(s)\n"
+        )
+
+        healer = Healer(settings, self.provider) if heal else None
+        results, healing_attempts = self.executor.run(
+            test_cases,
+            healer=healer,
+            url=url_label,
+            on_test=self._on_test,
+            cancel=cancel,
+        )
+        report.results = results
+        report.healing_attempts = healing_attempts
+        for attempt in healing_attempts:
+            self._event("healing", attempt=attempt.model_dump(mode="json"))
+
+        if self._cancelled(cancel):
+            return self._finish(report, cancelled=True)
+
+        self._event("stage", stage="report")
+        report = self.reporter.finalize(report, open_after=False)
+        self.reporter.print_summary(report)
+        return self._finish(report)
+
+    # ------------------------------------------------------------------
+
     def _on_test(self, tc, result: TestResult | None) -> None:
         if result is None:
             self._event("test_started", test_id=tc.id, name=tc.name)
