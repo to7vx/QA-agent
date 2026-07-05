@@ -120,3 +120,94 @@ def test_get_unknown_run_404(client):
 
 def test_cancel_inactive_run_409(client):
     assert client.post("/api/runs/doesnotexist/cancel").status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# v2 endpoints
+# ---------------------------------------------------------------------------
+
+def test_insights_empty(client):
+    data = client.get("/api/insights").json()
+    assert data["kpis"]["runs"] == 0
+    assert data["trend"] == []
+    assert data["flakiest"] == []
+
+
+def test_insights_after_run(client):
+    client.put("/api/settings/keys/anthropic", json={"api_key": "sk-test-1234"})
+    run_id = client.post(
+        "/api/runs", json={"url": "https://example.com", "provider": "anthropic"}
+    ).json()["run_id"]
+    _wait_for_finish(client, run_id)
+    data = client.get("/api/insights").json()
+    assert data["kpis"]["runs"] == 1
+    assert data["trend"][0]["run_id"] == run_id
+
+
+def test_tests_library_crud(client, tmp_path):
+    # empty library
+    assert client.get("/api/tests").json() == {"tests": []}
+    assert client.get("/api/tests/nope").status_code == 404
+    assert client.delete("/api/tests/nope").status_code == 404
+    assert client.post("/api/tests/nope/run").status_code in (400, 404)
+
+
+def test_compose_requires_key(client):
+    r = client.post("/api/compose", json={
+        "url": "https://example.com", "scenario": "log in and expect a welcome banner",
+        "provider": "anthropic",
+    })
+    assert r.status_code == 400
+    assert "No API key" in r.json()["detail"]
+
+
+def test_compose_validates_input(client):
+    client.put("/api/settings/keys/anthropic", json={"api_key": "sk-test-1234"})
+    assert client.post("/api/compose", json={
+        "url": "ftp://x", "scenario": "long enough scenario", "provider": "anthropic",
+    }).status_code == 400
+    assert client.post("/api/compose", json={
+        "url": "https://x.test", "scenario": "short", "provider": "anthropic",
+    }).status_code == 400
+
+
+def test_compose_success(client, monkeypatch):
+    from qa_agent.models import TestCase
+
+    async def fake_compose(provider, url, scenario, settings):
+        return TestCase(
+            id="composed_ab12cd34", flow_id="", name="log in and expect banner",
+            description=scenario, playwright_code="def test(): pass",
+            file_path=str(settings.output_dir / "composed_x.py"), tags=["composed"],
+        )
+
+    monkeypatch.setattr("qa_agent.dashboard.api.compose_with_snapshot", fake_compose)
+    client.put("/api/settings/keys/anthropic", json={"api_key": "sk-test-1234"})
+    r = client.post("/api/compose", json={
+        "url": "https://example.com",
+        "scenario": "log in and expect a welcome banner",
+        "provider": "anthropic",
+    })
+    assert r.status_code == 201
+    body = r.json()
+    assert body["id"] == "composed_ab12cd34"
+    assert body["code"] == "def test(): pass"
+    # now in the library
+    tests = client.get("/api/tests").json()["tests"]
+    assert tests[0]["id"] == "composed_ab12cd34"
+    full = client.get("/api/tests/composed_ab12cd34").json()
+    assert full["code"] == "def test(): pass"
+
+
+def test_rerun_failed_no_failures(client):
+    client.put("/api/settings/keys/anthropic", json={"api_key": "sk-test-1234"})
+    run_id = client.post(
+        "/api/runs", json={"url": "https://example.com", "provider": "anthropic"}
+    ).json()["run_id"]
+    _wait_for_finish(client, run_id)
+    r = client.post(f"/api/runs/{run_id}/rerun-failed")
+    assert r.status_code == 409  # FakeAgent's tests all pass
+
+
+def test_run_code_endpoint_404s(client):
+    assert client.get("/api/runs/none/code/none").status_code == 404
