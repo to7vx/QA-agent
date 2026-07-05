@@ -29,7 +29,14 @@ The primary way to use qa-agent is the local web dashboard:
 uv run qa-agent        # starts http://127.0.0.1:8899 and opens your browser
 ```
 
-Paste a URL, pick an LLM provider — **Claude, GPT, or Gemini** — and watch the pipeline run live: flows appear as the agent discovers them, tests tick pass/fail in real time, and self-healed selectors show their before/after with a confidence score. API keys are entered on the Settings page and stored locally in `~/.qa-agent/config.json` (plaintext, local-only — this is a single-user tool); environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`) work too. Run history and full reports live under `reports/`.
+Paste a URL, pick an LLM provider — **Claude, GPT, or Gemini** — and watch the pipeline run live: flows appear as the agent discovers them, tests tick pass/fail in real time, and self-healed selectors show their before/after with a confidence score. API keys are entered on the Settings page and stored locally in `~/.qa-agent/config.json` (plaintext, local-only — this is a single-user tool); environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`) work too.
+
+Beyond auto-generated suites:
+
+- **Test Lab** — describe a scenario in plain English ("search for playwright, open the first result, expect the title to match"); the agent reads the live page, writes the Playwright test, and saves it to your library where you can run it, read the code, or copy it out.
+- **Insights** — pass-rate trend across runs, flakiest tests, and self-healing outcomes.
+- **Re-run failed** — one click on a finished run re-executes only the failures.
+- Everything persists in a local SQLite database at `reports/qa.db` — no cloud, no account.
 
 ## Demo
 
