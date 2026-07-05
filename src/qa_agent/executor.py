@@ -6,8 +6,10 @@ import json
 import re
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
+from typing import Callable
 
 from rich import box
 from rich.console import Console
@@ -46,11 +48,15 @@ class Executor:
         test_cases: list[TestCase],
         healer: object | None = None,
         url: str = "",
+        on_test: Callable[[TestCase, TestResult | None], None] | None = None,
+        cancel: threading.Event | None = None,
     ) -> tuple[list[TestResult], list[HealingAttempt]]:
         """Run every test case in sequence, showing a live progress table.
 
         Returns (results, healing_attempts).
         Pass a Healer instance to enable self-healing on selector failures.
+        on_test fires twice per test: (tc, None) when it starts and
+        (tc, result) when it finishes. A set cancel event stops between tests.
         """
         if not test_cases:
             return [], []
@@ -68,8 +74,12 @@ class Executor:
             vertical_overflow="visible",
         ) as live:
             for i, tc in enumerate(test_cases):
+                if cancel is not None and cancel.is_set():
+                    break
                 slots[i] = _pending_result(tc, TestStatus.RUNNING)
                 live.update(_render_table(test_cases, slots))
+                if on_test is not None:
+                    on_test(tc, None)
 
                 existing_shots = (
                     set(screenshot_dir.rglob("*.png"))
@@ -109,6 +119,8 @@ class Executor:
 
                 slots[i] = result
                 live.update(_render_table(test_cases, slots))
+                if on_test is not None:
+                    on_test(tc, result)
 
         return [r for r in slots if r is not None], all_attempts
 

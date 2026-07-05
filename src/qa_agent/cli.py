@@ -1,4 +1,4 @@
-"""CLI entry point: qa-agent <command> [args]"""
+"""CLI entry point: `qa-agent` launches the dashboard; subcommands still work."""
 
 from __future__ import annotations
 
@@ -19,9 +19,60 @@ _PRIORITY_STYLE = {
 }
 
 
-@click.group()
-def cli() -> None:
-    """Autonomous AI QA agent powered by Claude and Playwright."""
+@click.group(invoke_without_command=True)
+@click.pass_context
+def cli(ctx: click.Context) -> None:
+    """Autonomous AI QA agent — run `qa-agent` to open the dashboard."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(dashboard)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _build_provider(settings):
+    """Build the LLM provider from settings + keystore, or exit with guidance."""
+    from .agent import build_default_provider
+    from .providers import ProviderError
+
+    try:
+        return build_default_provider(settings)
+    except ProviderError as exc:
+        console.print(f"[red]Error:[/red] {exc}")
+        console.print(
+            "Run [bold]qa-agent[/bold] and open Settings to add a key, "
+            "or set the provider's environment variable."
+        )
+        raise SystemExit(1)
+
+
+def _apply_overrides(settings, provider_id: str | None, model: str | None, headless: bool | None = None):
+    if provider_id:
+        settings.provider = provider_id
+    if model:
+        settings.model = model
+    if headless is not None:
+        settings.headless = headless
+    return settings
+
+
+# ---------------------------------------------------------------------------
+# dashboard
+# ---------------------------------------------------------------------------
+
+@cli.command()
+@click.option("--port", default=8899, help="Port for the local dashboard server.")
+@click.option("--no-browser", is_flag=True, default=False, help="Don't open the browser automatically.")
+def dashboard(port: int, no_browser: bool) -> None:
+    """Start the qa-agent dashboard at http://127.0.0.1:<port>."""
+    from .dashboard.server import serve
+
+    console.print(
+        f"\n[bold cyan]qa-agent dashboard[/bold cyan]  "
+        f"http://127.0.0.1:{port}  [dim](Ctrl+C to stop)[/dim]\n"
+    )
+    serve(port=port, open_browser=not no_browser)
 
 
 # ---------------------------------------------------------------------------
@@ -31,32 +82,19 @@ def cli() -> None:
 @cli.command()
 @click.argument("url")
 @click.option("--headless/--headed", default=True, help="Run browser in headless mode.")
-@click.option("--model", default=None, help="Claude model override.")
-def explore(url: str, headless: bool, model: str | None) -> None:
+@click.option("--provider", "provider_id", default=None, help="LLM provider: anthropic | openai | google.")
+@click.option("--model", default=None, help="Model override.")
+def explore(url: str, headless: bool, provider_id: str | None, model: str | None) -> None:
     """Discover user flows on a page without generating or running tests."""
-    import anthropic
-    from pydantic import ValidationError
-
     from .config import get_settings
     from .explorer import Explorer, ExplorerError
 
-    try:
-        settings = get_settings()
-    except ValidationError:
-        console.print(
-            "[red]Error:[/red] ANTHROPIC_API_KEY is not set.\n"
-            "Copy [dim].env.example[/dim] to [dim].env[/dim] and add your key."
-        )
-        raise SystemExit(1)
-
-    if model:
-        settings.model = model
-    settings.headless = headless
+    settings = _apply_overrides(get_settings(), provider_id, model, headless)
+    provider = _build_provider(settings)
 
     console.print(f"\n[bold cyan]qa-agent explore[/bold cyan] {url}\n")
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    explorer = Explorer(settings, client)
+    explorer = Explorer(settings, provider)
 
     try:
         flows = asyncio.run(explorer.explore(url))
@@ -77,41 +115,25 @@ def explore(url: str, headless: bool, model: str | None) -> None:
 @cli.command()
 @click.argument("url")
 @click.option("--headless/--headed", default=True, help="Run browser in headless mode.")
-@click.option("--model", default=None, help="Claude model override.")
+@click.option("--provider", "provider_id", default=None, help="LLM provider: anthropic | openai | google.")
+@click.option("--model", default=None, help="Model override.")
 @click.option("--out", default=None, help="Output directory (overrides QA_AGENT_OUTPUT_DIR).")
-def generate(url: str, headless: bool, model: str | None, out: str | None) -> None:
+def generate(url: str, headless: bool, provider_id: str | None, model: str | None, out: str | None) -> None:
     """Explore a URL, then generate and save Playwright test files."""
-    import anthropic
-    from pydantic import ValidationError
-    from rich.table import Table
-    from rich import box
-
     from .config import get_settings
     from .explorer import Explorer, ExplorerError
-    from .generator import Generator, GeneratorError
+    from .generator import Generator
 
-    try:
-        settings = get_settings()
-    except ValidationError:
-        console.print(
-            "[red]Error:[/red] ANTHROPIC_API_KEY is not set.\n"
-            "Copy [dim].env.example[/dim] to [dim].env[/dim] and add your key."
-        )
-        raise SystemExit(1)
-
-    if model:
-        settings.model = model
+    settings = _apply_overrides(get_settings(), provider_id, model, headless)
     if out:
         from pathlib import Path
         settings.output_dir = Path(out)
-    settings.headless = headless
-
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    provider = _build_provider(settings)
 
     # Step 1: Explore
     console.print(f"\n[bold cyan]qa-agent generate[/bold cyan] {url}\n")
     console.print("[dim]Step 1/2[/dim]  Exploring page...")
-    explorer = Explorer(settings, client)
+    explorer = Explorer(settings, provider)
     try:
         flows = asyncio.run(explorer.explore(url))
     except ExplorerError as exc:
@@ -132,7 +154,7 @@ def generate(url: str, headless: bool, model: str | None, out: str | None) -> No
 
     # Step 2: Generate
     console.print("[dim]Step 2/2[/dim]  Generating test files...\n")
-    gen = Generator(settings, client)
+    gen = Generator(settings, provider)
     try:
         test_cases = gen.generate(flows, page_context=page_context)
     except KeyboardInterrupt:
@@ -183,24 +205,16 @@ def generate(url: str, headless: bool, model: str | None, out: str | None) -> No
 @cli.command()
 @click.option("--dir", "out_dir", default=None, help="generated_tests/ directory (default: from .env).")
 @click.option("--headed", is_flag=True, default=False, help="Run browser in visible window.")
+@click.option("--provider", "provider_id", default=None, help="LLM provider for self-healing.")
+@click.option("--model", default=None, help="Model override for self-healing.")
 @click.option("--no-heal", "no_heal", is_flag=True, default=False, help="Disable self-healing (useful for debugging).")
-def execute(out_dir: str | None, headed: bool, no_heal: bool) -> None:
+def execute(out_dir: str | None, headed: bool, provider_id: str | None, model: str | None, no_heal: bool) -> None:
     """Run whatever tests are in generated_tests/ and show live results."""
-    import anthropic as _anthropic
-    from pydantic import ValidationError
-
     from .config import get_settings
     from .executor import Executor
     from .healer import Healer
 
-    try:
-        settings = get_settings()
-    except ValidationError:
-        console.print(
-            "[red]Error:[/red] ANTHROPIC_API_KEY is not set.\n"
-            "Copy [dim].env.example[/dim] to [dim].env[/dim] and add your key."
-        )
-        raise SystemExit(1)
+    settings = _apply_overrides(get_settings(), provider_id, model)
 
     if out_dir:
         from pathlib import Path
@@ -230,8 +244,9 @@ def execute(out_dir: str | None, headed: bool, no_heal: bool) -> None:
     healer = None
     if not no_heal:
         try:
-            client = _anthropic.Anthropic(api_key=settings.anthropic_api_key)
-            healer = Healer(settings, client, settings.model)
+            healer = Healer(settings, _build_provider(settings))
+        except SystemExit:
+            raise
         except Exception:
             console.print("[yellow]Could not initialise healer — running without self-healing.[/yellow]")
 
@@ -278,33 +293,23 @@ def execute(out_dir: str | None, headed: bool, no_heal: bool) -> None:
 @cli.command()
 @click.argument("url")
 @click.option("--headless/--headed", default=True, help="Run browser in headless mode.")
-@click.option("--model", default=None, help="Claude model override.")
+@click.option("--provider", "provider_id", default=None, help="LLM provider: anthropic | openai | google.")
+@click.option("--model", default=None, help="Model override.")
 @click.option("--open", "open_report", is_flag=True, default=False, help="Open report in default viewer after run.")
 @click.option("--no-heal", "no_heal", is_flag=True, default=False, help="Disable self-healing (useful for debugging).")
-def run(url: str, headless: bool, model: str | None, open_report: bool, no_heal: bool) -> None:
+def run(url: str, headless: bool, provider_id: str | None, model: str | None, open_report: bool, no_heal: bool) -> None:
     """Full pipeline: explore -> generate -> execute -> report."""
-    import anthropic
-    from pydantic import ValidationError
-
-    from .config import get_settings
     from .agent import QAAgent
+    from .config import get_settings
 
-    try:
-        settings = get_settings()
-    except ValidationError:
-        console.print(
-            "[red]Error:[/red] ANTHROPIC_API_KEY is not set.\n"
-            "Copy [dim].env.example[/dim] to [dim].env[/dim] and add your key."
-        )
-        raise SystemExit(1)
-
-    if model:
-        settings.model = model
-    settings.headless = headless
+    settings = _apply_overrides(get_settings(), provider_id, model, headless)
+    provider = _build_provider(settings)
 
     try:
         report = asyncio.run(
-            QAAgent(settings).run(url, open_report=open_report, heal=not no_heal)
+            QAAgent(settings, provider=provider).run(
+                url, open_report=open_report, heal=not no_heal
+            )
         )
     except KeyboardInterrupt:
         console.print("\n[yellow]Cancelled.[/yellow]")

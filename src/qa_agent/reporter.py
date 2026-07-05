@@ -8,13 +8,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import anthropic
 from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
 from .models import HealingAttempt, Report, TestResult, TestStatus
+from .providers import LLMProvider
 from .prompts import (
     ANALYZE_FAILURE_PROMPT,
     ANALYZE_FAILURE_SYSTEM,
@@ -41,12 +41,10 @@ class Reporter:
     def __init__(
         self,
         report_dir: Path,
-        client: anthropic.Anthropic | None = None,
-        model: str = "claude-sonnet-4-6",
+        provider: LLMProvider | None = None,
     ) -> None:
         self.report_dir = report_dir
-        self.client = client
-        self.model = model
+        self.provider = provider
 
     # ------------------------------------------------------------------
     # Public API
@@ -56,14 +54,14 @@ class Reporter:
         report.finished_at = datetime.now(timezone.utc)
         self.report_dir.mkdir(parents=True, exist_ok=True)
 
-        # Per-failure AI analysis (only if client available)
+        # Per-failure AI analysis (only if a provider is available)
         fix_suggestions: dict[str, str] = {}
-        if self.client:
+        if self.provider:
             fix_suggestions = self._get_fix_suggestions(report)
 
         # Overall AI verdict
         ai_analysis = ""
-        if self.client:
+        if self.provider:
             ai_analysis = self._get_ai_analysis(report)
 
         md = _render_markdown(report, fix_suggestions, ai_analysis)
@@ -176,21 +174,14 @@ class Reporter:
                 continue
 
             try:
-                msg = self.client.messages.create(
-                    model=self.model,
+                suggestions[result.test_case_id] = self.provider.complete(
+                    ANALYZE_FAILURE_SYSTEM,
+                    ANALYZE_FAILURE_PROMPT.format(
+                        test_code=test_code or "(source not available)",
+                        error_output=error_output or "(no error output captured)",
+                    ),
                     max_tokens=1024,
-                    system=ANALYZE_FAILURE_SYSTEM,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": ANALYZE_FAILURE_PROMPT.format(
-                                test_code=test_code or "(source not available)",
-                                error_output=error_output or "(no error output captured)",
-                            ),
-                        }
-                    ],
                 )
-                suggestions[result.test_case_id] = msg.content[0].text.strip()
             except Exception:
                 pass  # best-effort; skip silently
 
@@ -202,26 +193,19 @@ class Reporter:
         failures_summary = _build_failures_summary(report)
 
         try:
-            msg = self.client.messages.create(
-                model=self.model,
+            return self.provider.complete(
+                REPORTER_ANALYSIS_SYSTEM,
+                REPORTER_ANALYSIS_PROMPT.format(
+                    url=report.url,
+                    total=report.total,
+                    passed=report.passed,
+                    pass_rate=f"{report.pass_rate:.1f}",
+                    failed=report.failed,
+                    flows_summary=flows_summary,
+                    failures_summary=failures_summary,
+                ),
                 max_tokens=1024,
-                system=REPORTER_ANALYSIS_SYSTEM,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": REPORTER_ANALYSIS_PROMPT.format(
-                            url=report.url,
-                            total=report.total,
-                            passed=report.passed,
-                            pass_rate=f"{report.pass_rate:.1f}",
-                            failed=report.failed,
-                            flows_summary=flows_summary,
-                            failures_summary=failures_summary,
-                        ),
-                    }
-                ],
             )
-            return msg.content[0].text.strip()
         except Exception:
             return ""
 

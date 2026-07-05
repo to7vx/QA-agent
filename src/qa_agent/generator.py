@@ -10,13 +10,15 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-import anthropic
+from typing import Callable
+
 from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 from .config import Settings
 from .models import Flow, TestCase
 from .prompts import GENERATOR_PROMPT, GENERATOR_SYSTEM, REPAIR_PROMPT, REPAIR_SYSTEM
+from .providers import LLMProvider
 
 console = Console()
 
@@ -56,16 +58,21 @@ class GeneratorError(Exception):
 
 
 class Generator:
-    def __init__(self, settings: Settings, client: anthropic.Anthropic) -> None:
+    def __init__(self, settings: Settings, provider: LLMProvider) -> None:
         self.settings = settings
-        self.client = client
+        self.provider = provider
         self._results: list[_GenResult] = []
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def generate(self, flows: list[Flow], page_context: str = "") -> list[TestCase]:
+    def generate(
+        self,
+        flows: list[Flow],
+        page_context: str = "",
+        on_progress: Callable[[TestCase], None] | None = None,
+    ) -> list[TestCase]:
         """Generate a TestCase for each flow. Returns all TestCases including
         any that needed syntax repair — callers should check that files are
         written before executing them."""
@@ -89,6 +96,8 @@ class Generator:
                 progress.update(task, description=f"Generating: [cyan]{flow.name}[/cyan]")
                 result = self._generate_one(flow, ctx)
                 self._results.append(result)
+                if on_progress is not None:
+                    on_progress(result.test_case)
                 if result.repaired:
                     console.print(f"  [yellow]Repaired syntax[/yellow] in {flow.name}")
                 elif not result.syntax_valid:
@@ -165,35 +174,21 @@ class Generator:
         )
 
     def _call_claude_generate(self, flow: Flow, page_context: str) -> str:
-        response = self.client.messages.create(
-            model=self.settings.model,
+        return self.provider.complete(
+            GENERATOR_SYSTEM,
+            GENERATOR_PROMPT.format(
+                flow_json=flow.model_dump_json(indent=2),
+                page_context=page_context[:6_000],  # cap to stay within budget
+            ),
             max_tokens=4_096,
-            system=GENERATOR_SYSTEM,
-            messages=[
-                {
-                    "role": "user",
-                    "content": GENERATOR_PROMPT.format(
-                        flow_json=flow.model_dump_json(indent=2),
-                        page_context=page_context[:6_000],  # cap to stay within budget
-                    ),
-                }
-            ],
         )
-        return response.content[0].text.strip()
 
     def _call_claude_repair(self, code: str, error: str) -> str:
-        response = self.client.messages.create(
-            model=self.settings.model,
+        return self.provider.complete(
+            REPAIR_SYSTEM,
+            REPAIR_PROMPT.format(error=error, code=code),
             max_tokens=4_096,
-            system=REPAIR_SYSTEM,
-            messages=[
-                {
-                    "role": "user",
-                    "content": REPAIR_PROMPT.format(error=error, code=code),
-                }
-            ],
         )
-        return response.content[0].text.strip()
 
     def _build_manifest(self, test_cases: list[TestCase], url: str) -> dict:
         result_map = {r.test_case.id: r for r in self._results}
@@ -215,7 +210,8 @@ class Generator:
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "url": url,
-            "model": self.settings.model,
+            "provider": self.provider.name,
+            "model": self.provider.model,
             "flows_count": len(test_cases),
             "output_dir": str(self.settings.output_dir),
             "tests": tests,

@@ -1,4 +1,9 @@
-"""Configuration loaded from environment variables."""
+"""Configuration loaded from environment variables.
+
+Provider API keys are all optional here — at least one must be available
+(via env, .env, or the dashboard keystore) by the time a run starts, and
+that check happens at the call site, not at Settings construction.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +17,10 @@ load_dotenv()
 
 
 class Settings(BaseSettings):
-    anthropic_api_key: str = Field(..., alias="ANTHROPIC_API_KEY")
+    anthropic_api_key: str | None = Field(None, alias="ANTHROPIC_API_KEY")
+    openai_api_key: str | None = Field(None, alias="OPENAI_API_KEY")
+    google_api_key: str | None = Field(None, alias="GOOGLE_API_KEY")
+    provider: str = Field("anthropic", alias="QA_AGENT_PROVIDER")
     model: str = Field("claude-sonnet-4-6", alias="QA_AGENT_MODEL")
     headless: bool = Field(True, alias="QA_AGENT_HEADLESS")
     output_dir: Path = Field(Path("generated_tests"), alias="QA_AGENT_OUTPUT_DIR")

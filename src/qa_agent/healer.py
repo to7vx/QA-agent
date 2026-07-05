@@ -8,11 +8,10 @@ import sys
 import time
 from pathlib import Path
 
-import anthropic
-
 from .config import Settings
 from .models import HealingAttempt, TestCase, TestResult, TestStatus
 from .prompts import HEALER_PROMPT, HEALER_SYSTEM
+from .providers import LLMProvider
 
 _CONFIDENCE_THRESHOLD = 0.7
 
@@ -21,15 +20,9 @@ _SELECTOR_FAILURE_STATUSES = {TestStatus.FAILED, TestStatus.ERROR}
 
 
 class Healer:
-    def __init__(
-        self,
-        settings: Settings,
-        client: anthropic.Anthropic,
-        model: str,
-    ) -> None:
+    def __init__(self, settings: Settings, provider: LLMProvider) -> None:
         self.settings = settings
-        self.client = client
-        self.model = model
+        self.provider = provider
 
     # ------------------------------------------------------------------
     # Public API
@@ -143,26 +136,19 @@ class Healer:
         ax_tree: str,
     ) -> dict | None:
         try:
-            msg = self.client.messages.create(
-                model=self.model,
+            raw = self.provider.complete(
+                HEALER_SYSTEM,
+                HEALER_PROMPT.format(
+                    test_code=test_code[:4_000],
+                    failing_selector=failing_selector,
+                    error_message=(result.error_message or "")[:500],
+                    dom=dom[:8_000],
+                    ax_tree=ax_tree[:3_000],
+                ),
                 max_tokens=512,
-                system=HEALER_SYSTEM,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": HEALER_PROMPT.format(
-                            test_code=test_code[:4_000],
-                            failing_selector=failing_selector,
-                            error_message=(result.error_message or "")[:500],
-                            dom=dom[:8_000],
-                            ax_tree=ax_tree[:3_000],
-                        ),
-                    }
-                ],
             )
-            raw = msg.content[0].text.strip()
-            # Strip markdown fences if Claude added them despite instructions
-            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            # Strip markdown fences if the model added them despite instructions
+            raw = re.sub(r"^```(?:json)?\s*", "", raw.strip())
             raw = re.sub(r"\s*```$", "", raw.strip())
             return json.loads(raw)
         except Exception:

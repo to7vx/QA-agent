@@ -9,7 +9,6 @@ import tempfile
 import uuid
 from pathlib import Path
 
-import anthropic
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 from playwright.async_api import async_playwright
 from rich.console import Console
@@ -18,6 +17,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from .config import Settings
 from .models import Flow, FlowPriority
 from .prompts import EXPLORER_PROMPT, EXPLORER_SYSTEM
+from .providers import LLMProvider, ProviderAuthError, ProviderError, ProviderRateLimitError
 
 console = Console()
 
@@ -142,9 +142,9 @@ class ExplorerError(Exception):
 
 
 class Explorer:
-    def __init__(self, settings: Settings, client: anthropic.Anthropic) -> None:
+    def __init__(self, settings: Settings, provider: LLMProvider) -> None:
         self.settings = settings
-        self.client = client
+        self.provider = provider
         # Stored after each explore() call so callers can access page context
         # without launching a second browser session.
         self.last_snapshot: PageSnapshot | None = None
@@ -170,16 +170,16 @@ class Explorer:
             except Exception as exc:
                 raise ExplorerError(f"Browser error on {url}: {exc}") from exc
 
-            progress.update(task, description="Sending page context to Claude...")
+            progress.update(task, description="Sending page context to the LLM...")
 
             try:
                 flows = self._identify_flows(snapshot)
-            except anthropic.AuthenticationError as exc:
-                raise ExplorerError("Anthropic API key is invalid or missing.") from exc
-            except anthropic.RateLimitError as exc:
-                raise ExplorerError("Anthropic rate limit hit — wait a moment and retry.") from exc
-            except anthropic.APIError as exc:
-                raise ExplorerError(f"Claude API error: {exc}") from exc
+            except ProviderAuthError as exc:
+                raise ExplorerError(str(exc)) from exc
+            except ProviderRateLimitError as exc:
+                raise ExplorerError(str(exc)) from exc
+            except ProviderError as exc:
+                raise ExplorerError(f"LLM API error: {exc}") from exc
 
             progress.update(task, description=f"Done — {len(flows)} flows identified")
 
@@ -244,15 +244,12 @@ class Explorer:
 
     def _identify_flows(self, snapshot: PageSnapshot) -> list[Flow]:
         context = snapshot.to_prompt_context()
-        response = self.client.messages.create(
-            model=self.settings.model,
+        raw = self.provider.complete(
+            EXPLORER_SYSTEM,
+            EXPLORER_PROMPT.format(context=context),
             max_tokens=4_096,
-            system=EXPLORER_SYSTEM,
-            messages=[
-                {"role": "user", "content": EXPLORER_PROMPT.format(context=context)}
-            ],
         )
-        raw = _strip_fences(response.content[0].text.strip())
+        raw = _strip_fences(raw)
 
         try:
             flows_data: list[dict] = json.loads(raw)
